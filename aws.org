@@ -1,0 +1,378 @@
+# -*- org-export-babel-evaluate: nil -*-
+# -*- org-confirm-babel-evaluate: nil -*-
+#+TITLE:     AWS Setups
+#+AUTHOR:    Dominik Dahlem
+#+EMAIL:     dominik_dahlem@optum.com
+#+DATE:      2017-03-9 Thu
+#+LANGUAGE:  en
+
+* Prequel
+The documentation of the following workflow is done using org-mode
+which is an emacs package for literal programming and more. The
+workflow is documented in a serial fashion with all the scripts
+embedded. In principle it can be opened in any text editor, however,
+to see all the annotations Emacs should be used.
+
+This org file documents the entirety of the AWS setup for GPU
+computing. The following sections provide the source-code snippets in
+various programming languages to accomplish this.
+
+** Variable Declarations
+You can re-run this subtree by executing `org-babel-execute-subtree'
+in order to set the variables to your environment. Change the code
+below to get directories depending on who you are. Also, you can run
+the command `org-babel-execute-subtree' with C-c C-v s.
+
+*** Directories
+
+Let's set up the directories we will be using. I would keep an AWS
+folder with sub-directories for all cluster setups respectively.
+
+#+name: baseDir
+#+BEGIN_SRC sh
+  pwd
+#+END_SRC
+
+#+name: dataDir
+#+begin_src sh :var baseDir=baseDir
+echo ${baseDir}/data
+#+end_src
+
+#+name: scriptsDir
+#+begin_src sh :var baseDir=baseDir
+echo ${baseDir}/scripts
+#+end_src
+
+We create all directories, which we only need to do when we set up the
+project.
+
+#+BEGIN_SRC sh :var scriptsDir=scriptsDir :var dataDir=dataDir :results none
+  mkdir -p ${scriptsDir}
+  mkdir -p ${dataDir}
+#+END_SRC
+
+* Setup
+In order to setup the EC2 instance, we first create the cluster
+environment and then install the desired software in order to create
+an AMI image first. In subsequent steps, we can use our AMI image
+directly.
+
+** P2 instance
+The P2 instances on AWS are dedicated GPU computing resources. They
+come in various sizes, and we might only need a single instance to
+conduct the work.
+
+*** Configuration
+Most of the EC2 environment configuration is taken from Jeremy
+Howard's deep learning course. I changed the script a bit to
+accommodate creating spot instances instead of an on-demand instance.
+
+The following variables are needed.
+
+#+name: instanceType
+ : "p2.xlarge"
+
+We work off an AWS supplied image of Ubuntu 16.04 (ami-405f7226 in the
+eu-west-1 region). If you launch this script in a different
+environment you'd to find a corresponding AMI ID. The script below was
+used to create a dedicated deep learning environment
+(ami-c21b31a4). that includes several python-based deep learning
+libraries, i.e., pytorch, theano, tensorflow, and keras. Those
+libraries are installed in two Anaconda environments, one for python
+2.7 (py27) and one for python 3.5 (py35). We also loaded up a
+deepspeech environment with custom pytorch bindings for speech to text
+transcriptions in py27.
+
+#+name: ami
+ : "ami-405f7226"
+
+#+name: region
+ : "eu-west-1"
+
+The following variable is the profile name.
+
+#+name: name
+ : "ddahlem"
+
+#+name: cidr
+ : "0.0.0.0/0"
+
+The following script just creates a JSON launch specification to
+create spot instances.
+
+#+BEGIN_SRC python :tangle scripts/spec.py
+import json, sys
+
+print(json.dumps({
+    'ImageId': sys.argv[1],
+    'KeyName': sys.argv[2],
+    'SecurityGroupIds': list(map(str.strip, sys.argv[3].split(','))),
+    'InstanceType': sys.argv[4],
+    'SubnetId': sys.argv[5],
+    'BlockDeviceMappings': [
+        {
+            'DeviceName': '/dev/sda1',
+            'Ebs': {
+                'VolumeSize': 128,
+                'VolumeType': 'gp2'
+            }
+        }
+    ]
+}, indent=4))
+#+END_SRC
+
+The following script is mainly taken from Jeremy Howard with some
+modifications to launch spot instances and to differentiate between
+AWS profiles.
+
+#+BEGIN_SRC sh :tangle scripts/setup.sh :var instanceType=instanceType :var ami=ami :var region=region :var name=name :var cidr=cidr :var scriptsDir=scriptsDir :var dataDir=dataDir
+vpcId=$(aws ec2 create-vpc --cidr-block 10.0.0.0/28 --query 'Vpc.VpcId' --output text --profile ${name})
+aws ec2 create-tags --resources ${vpcId} --tags Key=Name,Value=${name}  --profile ${name}
+aws ec2 modify-vpc-attribute --vpc-id ${vpcId} --enable-dns-support "{\"Value\":true}" --profile ${name}
+aws ec2 modify-vpc-attribute --vpc-id ${vpcId} --enable-dns-hostnames "{\"Value\":true}" --profile ${name}
+
+internetGatewayId=$(aws ec2 create-internet-gateway --query 'InternetGateway.InternetGatewayId' --output text  --profile ${name})
+aws ec2 create-tags --resources ${internetGatewayId} --tags --tags Key=Name,Value=${name}-gateway --profile ${name}
+aws ec2 attach-internet-gateway --internet-gateway-id ${internetGatewayId} --vpc-id ${vpcId} --profile ${name}
+
+subnetId=$(aws ec2 create-subnet --vpc-id ${vpcId} --cidr-block 10.0.0.0/28 --query 'Subnet.SubnetId' --output text --profile ${name})
+aws ec2 create-tags --resources ${internetGatewayId} --tags --tags Key=Name,Value=${name}-subnet --profile ${name}
+
+routeTableId=$(aws ec2 create-route-table --vpc-id ${vpcId} --query 'RouteTable.RouteTableId' --output text --profile ${name})
+aws ec2 create-tags --resources ${routeTableId} --tags --tags Key=Name,Value=${name}-route-table --profile ${name}
+routeTableAssoc=$(aws ec2 associate-route-table --route-table-id ${routeTableId} --subnet-id ${subnetId} --output text --profile ${name})
+aws ec2 create-route --route-table-id ${routeTableId} --destination-cidr-block 0.0.0.0/0 --gateway-id ${internetGatewayId} --profile ${name}
+
+securityGroupId=$(aws ec2 create-security-group --group-name ${name}-security-group --description "SG for ddahlem GPU machine" --vpc-id ${vpcId} --query 'GroupId' --output text --profile ${name})
+
+# ssh
+aws ec2 authorize-security-group-ingress --group-id ${securityGroupId} --protocol tcp --port 22 --cidr ${cidr} --profile ${name}
+
+# jupyter notebook
+aws ec2 authorize-security-group-ingress --group-id ${securityGroupId} --protocol tcp --port 8888-8898 --cidr ${cidr} --profile ${name}
+
+if [ ! -d ~/.ssh ]
+then
+    mkdir ~/.ssh
+fi
+
+if [ ! -f ~/.ssh/aws-key-${name}.pem ]
+then
+    aws ec2 create-key-pair --key-name aws-key-${name} --query 'KeyMaterial' --output text --profile ${name} > ~/.ssh/aws-key-${name}.pem
+    chmod 400 ~/.ssh/aws-key-${name}.pem
+fi
+
+python ${scriptsDir}/spec.py ${ami} aws-key-${name} "${securityGroupId}" ${instanceType} ${subnetId} > ${dataDir}/launch-spec.json
+instanceId=$(aws ec2 request-spot-instances --spot-price "0.2" --instance-count 1 --type "one-time" --launch-specification file:/${dataDir}launch-spec.json --query 'SpotInstanceRequests[0].InstanceId' --output text --profile ${name})
+aws ec2 create-tags --resources ${instanceId} --tags --tags Key=Name,Value=${name}-gpu-machine --profile ${name}
+allocAddr=$(aws ec2 allocate-address --domain vpc --query 'AllocationId' --output text --profile ${name} --profile ${name})
+
+echo Waiting for instance start...
+aws ec2 wait instance-running --instance-ids ${instanceId} --profile ${name}
+sleep 10 # wait for ssh service to start running too
+assocId=$(aws ec2 associate-address --instance-id ${instanceId} --allocation-id ${allocAddr} --query 'AssociationId' --output text --profile ${name})
+instanceUrl=$(aws ec2 describe-instances --instance-ids ${instanceId} --query 'Reservations[0].Instances[0].PublicDnsName' --output text --profile ${name})
+
+# save commands to file
+echo \# Connect to your instance: > ${dataDir}/${name}-commands.txt
+echo ssh -i ~/.ssh/aws-key-${name}.pem ubuntu@${instanceUrl} >> ${dataDir}/${name}-commands.txt
+echo \# Stop your instance: : >> ${dataDir}/${name}-commands.txt
+echo aws ec2 stop-instances --instance-ids ${instanceId} --profile ${name}  >> ${dataDir}/${name}-commands.txt
+echo \# Start your instance: >> ${dataDir}/${name}-commands.txt
+echo aws ec2 start-instances --instance-ids ${instanceId} --profile ${name}  >> ${dataDir}/${name}-commands.txt
+echo \# Reboot your instance: >> ${dataDir}/${name}-commands.txt
+echo aws ec2 reboot-instances --instance-ids ${instanceId} --profile ${name}  >>${dataDir}/ ${name}-commands.txt
+echo ""
+
+# export vars to be sure
+echo instanceId=${instanceId} >> ${dataDir}/${name}-commands.txt
+echo subnetId=${subnetId} >> ${dataDir}/${name}-commands.txt
+echo securityGroupId=${securityGroupId} >> ${dataDir}/${name}-commands.txt
+echo instanceUrl=${instanceUrl} >> ${dataDir}/${name}-commands.txt
+echo routeTableId=${routeTableId} >> ${dataDir}/${name}-commands.txt
+echo name=${name} >> ${dataDir}/${name}-commands.txt
+echo vpcId=${vpcId} >> ${dataDir}/${name}-commands.txt
+echo internetGatewayId=${internetGatewayId} >> ${dataDir}/${name}-commands.txt
+echo subnetId=${subnetId} >> ${dataDir}/${name}-commands.txt
+echo allocAddr=${allocAddr} >> ${dataDir}/${name}-commands.txt
+echo assocId=${assocId} >> ${dataDir}/${name}-commands.txt
+echo routeTableAssoc=${routeTableAssoc} >> ${dataDir}/${name}-commands.txt
+
+# save delete commands for cleanup
+echo aws ec2 disassociate-address --association-id ${assocId} --profile ${name} > ${scriptsDir}/${name}-remove.sh
+echo aws ec2 release-address --allocation-id ${allocAddr} --profile ${name} >> ${scriptsDir}/${name}-remove.sh
+
+# volume gets deleted with the instance automatically
+echo aws ec2 terminate-instances --instance-ids ${instanceId} --profile ${name} >> ${scriptsDir}/${name}-remove.sh
+echo aws ec2 wait instance-terminated --instance-ids ${instanceId} --profile ${name} >> ${scriptsDir}/${name}-remove.sh
+echo aws ec2 delete-security-group --group-id ${securityGroupId} --profile ${name} >> ${scriptsDir}/${name}-remove.sh
+
+echo aws ec2 disassociate-route-table --association-id ${routeTableAssoc} --profile ${name} >> ${scriptsDir}/${name}-remove.sh
+echo aws ec2 delete-route-table --route-table-id ${routeTableId} --profile ${name} >> ${scriptsDir}/${name}-remove.sh
+
+echo aws ec2 detach-internet-gateway --internet-gateway-id ${internetGatewayId} --vpc-id ${vpcId} --profile ${name} >> ${scriptsDir}/${name}-remove.sh
+echo aws ec2 delete-internet-gateway --internet-gateway-id ${internetGatewayId} --profile ${name} >> ${scriptsDir}/${name}-remove.sh
+echo aws ec2 delete-subnet --subnet-id ${subnetId} --profile ${name} >> ${scriptsDir}/${name}-remove.sh
+
+echo aws ec2 delete-vpc --vpc-id ${vpcId} --profile ${name} >> ${scriptsDir}/${name}-remove.sh
+echo echo If you want to delete the key-pair, please do it manually. >> ${scriptsDir}/${name}-remove.sh
+
+echo aws ec2 create-image --instance-id ${instanceId} --name "Deep Learning Server" --description "An AMI for Deep Learning on NVIDIA GPUs" --block-device-mappings "[{\"DeviceName\": \"/dev/sda1\",\"Ebs\":{\"VolumeSize\":128, \"VolumeType\": \"gp2\"}}]" --profile ${name} > ${scriptsDir}/${name}-create-image.sh
+
+chmod +x ${scriptsDir}/*.sh
+
+echo All done. Find all you need to connect in the ${name}-commands.txt file and to remove the stack call ${scriptsDir}/${name}-remove.sh
+echo Connect to your instance: ssh -i ~/.ssh/aws-key-${name}.pem ubuntu@${instanceUrl}
+#+END_SRC
+
+*** System Installation
+
+This script sets up the Ubuntu environment with the appropriate
+libraries to perform deep learning model training using python using
+NVIDIA tools. It also sets up Anaconda with two environments dedicated
+to Python 2.7 and 3.5 respectively. However, the Baidu deepspeech
+implementation is only supported on Python 2.7.
+
+#+BEGIN_SRC sh :tangle scripts/system-setup.sh
+## system update
+sudo locale-gen en_IE.UTF-8
+sudo apt-get update
+sudo apt-get --assume-yes upgrade
+sudo apt-get --assume-yes install build-essential gcc-5 g++-5 make binutils cmake sox gcc-4.8 g++-4.8
+
+## set the gcc version
+sudo update-alternatives --remove-all gcc 
+sudo update-alternatives --remove-all g++
+
+sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-4.8 10
+sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-5 20
+
+sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-4.8 10
+sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-5 20
+
+sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc 30
+sudo update-alternatives --set cc /usr/bin/gcc
+
+sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++ 30
+sudo update-alternatives --set c++ /usr/bin/g++
+
+sudo update-alternatives --set gcc /usr/bin/gcc-4.8
+sudo update-alternatives --set g++ /usr/bin/g++-4.8
+
+mkdir downloads
+cd downloads
+
+## CUDA installation
+## Access to CUDA packages
+CUDA_REPO_PKG=cuda-repo-ubuntu1604_8.0.44-1_amd64.deb
+wget http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1604/x86_64/${CUDA_REPO_PKG} -O ${CUDA_REPO_PKG}
+sudo dpkg -i ${CUDA_REPO_PKG}
+rm -f ${CUDA_REPO_PKG}
+
+sudo apt-get update
+sudo apt-get install -y cuda libcudnn5 libcupti-dev
+sudo modprobe nvidia
+nvidia-smi
+
+## Anaconda installation
+wget "https://repo.continuum.io/archive/Anaconda2-4.3.0-Linux-x86_64.sh"
+bash Anaconda2-4.3.0-Linux-x86_64.sh -b
+echo "export PATH=\"$HOME/anaconda2/bin:\$PATH\"" >> ~/.bashrc
+export PATH="$HOME/anaconda2/bin:$PATH"
+
+## python 3.5
+conda create -n py35 python=3.5 anaconda
+source activate py35
+conda upgrade -y --all
+conda install -y bcolz
+conda install -y pytorch torchvision cuda80 -c soumith
+
+pip install theano
+echo "[global]
+device = gpu
+floatX = float32
+[cuda]
+root = /usr/local/cuda" > ~/.theanorc
+
+pip install keras
+pip install hyperas
+mkdir ~/.keras
+echo '{
+    "image_dim_ordering": "th",
+    "epsilon": 1e-07,
+    "floatx": "float32",
+    "backend": "theano"
+}' > ~/.keras/keras.json
+
+pip install --ignore-installed --upgrade https://storage.googleapis.com/tensorflow/linux/gpu/tensorflow_gpu-1.0.0-cp35-cp35m-linux_x86_64.whl
+
+## configure jupyter and prompt for password
+jupyter notebook --generate-config
+jupass=$(python -c "from notebook.auth import passwd; print(passwd())")
+echo "c.NotebookApp.password = u'"${jupass}"'" >> $HOME/.jupyter/jupyter_notebook_config.py
+echo "c.NotebookApp.ip = '*'
+c.NotebookApp.open_browser = False" >> $HOME/.jupyter/jupyter_notebook_config.py
+
+source deactivate py35
+
+## python 2.7
+conda create -n py27 python=2.7 anaconda
+source activate py27
+conda upgrade -y --all
+conda install -y bcolz
+conda install -y pytorch torchvision cuda80 -c soumith
+
+pip install theano
+pip install keras
+pip install hyperas
+pip install --ignore-installed --upgrade https://storage.googleapis.com/tensorflow/linux/gpu/tensorflow_gpu-1.0.0-cp27-none-linux_x86_64.whl
+
+## we only install this for python 2.7, because deepspeech is not supported on python 3.x
+## install Baidu's CTC activation function and corresponding pytorch bindings
+git clone https://github.com/SeanNaren/warp-ctc.git
+cd warp-ctc
+mkdir build; cd build
+cmake ..
+make
+export CUDA_HOME="/usr/local/cuda"
+cd ../pytorch_binding
+python setup.py install
+
+cd
+rm -rf downloads/
+
+## install deepspeech
+mkdir githubs
+cd ~/githubs
+git clone https://github.com/SeanNaren/deepspeech.pytorch.git
+cd deepspeech.pytorch
+pip install -r requirements.txt
+#+END_SRC
+
+*** Test Deep Neural network libraries
+
+We only need to test the deep learning libraries when the system is
+set up. However, these scripts can be executed any time one wishes to
+test an installation.
+
+#+BEGIN_SRC sh :tangle scripts/test-keras.sh
+source activate py35
+curl -sSL https://github.com/fchollet/keras/raw/master/examples/mnist_mlp.py | python
+source deactivate py35
+#+END_SRC
+
+#+BEGIN_SRC sh :tangle scripts/test-tensorflow.sh
+source activate py35
+curl -sSL https://github.com/tensorflow/tensorflow/raw/master/tensorflow/examples/tutorials/mnist/input_data.py|python
+curl -sSL https://github.com/tensorflow/tensorflow/raw/master/tensorflow/examples/tutorials/mnist/mnist_softmax.py|python
+source deactivate py35
+#+END_SRC
+
+#+BEGIN_SRC sh :tangle scripts/test-deepspeech.sh
+source activate py27
+cd ~/githubs/deepspeech.pytorch
+cd data; PYTHONPATH=~/githubs/deepspeech.pytorch python an4.py
+cd ~/githubs/deepspeech.pytorch
+python train.py --train_manifest data/train_manifest.csv --val_manifest data/val_manifest.csv
+source deactivate py27
+#+END_SRC
