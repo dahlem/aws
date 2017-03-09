@@ -180,7 +180,7 @@ echo export instanceReqId=${instanceReqId} >> ${dataDir}/${name}-envs.txt
 
 echo Waiting for instance start...
 aws ec2 wait spot-instance-request-fulfilled --profile ${name} --spot-instance-request-ids ${instanceReqId}
-instanceId=$(aws ec2 describe-spot-instance-requests --profile optum --output text --filter "Name=spot-instance-request-id,Values=${instanceReqId}" --query 'SpotInstanceRequests[0].InstanceId')
+instanceId=$(aws ec2 describe-spot-instance-requests --profile ${name} --output text --filter "Name=spot-instance-request-id,Values=${instanceReqId}" --query 'SpotInstanceRequests[0].InstanceId')
 echo export instanceId=${instanceId} >> ${dataDir}/${name}-envs.txt
 
 aws ec2 create-tags --resources ${instanceId} --tags Key=Name,Value=${name}-gpu-machine --profile ${name}
