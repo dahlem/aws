@@ -2,8 +2,8 @@
 # -*- org-confirm-babel-evaluate: nil -*-
 #+TITLE:     AWS Setups
 #+AUTHOR:    Dominik Dahlem
-#+EMAIL:     dominik_dahlem@optum.com
-#+DATE:      2017-03-9 Thu
+#+EMAIL:     dominik.dahlem@gmail.com
+#+DATE:      2017-03-09 Thu
 #+LANGUAGE:  en
 
 * Prequel
