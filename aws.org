@@ -125,25 +125,37 @@ The following script is mainly taken from Jeremy Howard with some
 modifications to launch spot instances and to differentiate between
 AWS profiles.
 
-#+BEGIN_SRC sh :tangle scripts/setup.sh :var instanceType=instanceType :var ami=ami :var region=region :var name=name :var cidr=cidr :var scriptsDir=scriptsDir :var dataDir=dataDir
+#+BEGIN_SRC sh :tangle scripts/setup.sh :var instanceType=instanceType :var ami=ami :var name=name :var cidr=cidr :var scriptsDir=scriptsDir :var dataDir=dataDir
+set -x ## print the commands
+set -e ## fail script if one command returns zero
+
+echo export name=${name} > ${dataDir}/${name}-envs.txt
+echo export instanceType=${instanceType} >> ${dataDir}/${name}-envs.txt
+
 vpcId=$(aws ec2 create-vpc --cidr-block 10.0.0.0/28 --query 'Vpc.VpcId' --output text --profile ${name})
+echo export vpcId=${vpcId} >> ${dataDir}/${name}-envs.txt
 aws ec2 create-tags --resources ${vpcId} --tags Key=Name,Value=${name}  --profile ${name}
 aws ec2 modify-vpc-attribute --vpc-id ${vpcId} --enable-dns-support "{\"Value\":true}" --profile ${name}
 aws ec2 modify-vpc-attribute --vpc-id ${vpcId} --enable-dns-hostnames "{\"Value\":true}" --profile ${name}
 
 internetGatewayId=$(aws ec2 create-internet-gateway --query 'InternetGateway.InternetGatewayId' --output text  --profile ${name})
+echo export internetGatewayId=${internetGatewayId} >> ${dataDir}/${name}-envs.txt
 aws ec2 create-tags --resources ${internetGatewayId} --tags --tags Key=Name,Value=${name}-gateway --profile ${name}
 aws ec2 attach-internet-gateway --internet-gateway-id ${internetGatewayId} --vpc-id ${vpcId} --profile ${name}
 
 subnetId=$(aws ec2 create-subnet --vpc-id ${vpcId} --cidr-block 10.0.0.0/28 --query 'Subnet.SubnetId' --output text --profile ${name})
+echo export subnetId=${subnetId} >> ${dataDir}/${name}-envs.txt
 aws ec2 create-tags --resources ${internetGatewayId} --tags --tags Key=Name,Value=${name}-subnet --profile ${name}
 
 routeTableId=$(aws ec2 create-route-table --vpc-id ${vpcId} --query 'RouteTable.RouteTableId' --output text --profile ${name})
+echo export routeTableId=${routeTableId} >> ${dataDir}/${name}-envs.txt
 aws ec2 create-tags --resources ${routeTableId} --tags --tags Key=Name,Value=${name}-route-table --profile ${name}
 routeTableAssoc=$(aws ec2 associate-route-table --route-table-id ${routeTableId} --subnet-id ${subnetId} --output text --profile ${name})
+echo export routeTableAssoc=${routeTableAssoc} >> ${dataDir}/${name}-envs.txt
 aws ec2 create-route --route-table-id ${routeTableId} --destination-cidr-block 0.0.0.0/0 --gateway-id ${internetGatewayId} --profile ${name}
 
 securityGroupId=$(aws ec2 create-security-group --group-name ${name}-security-group --description "SG for ddahlem GPU machine" --vpc-id ${vpcId} --query 'GroupId' --output text --profile ${name})
+echo export securityGroupId=${securityGroupId} >> ${dataDir}/${name}-envs.txt
 
 # ssh
 aws ec2 authorize-security-group-ingress --group-id ${securityGroupId} --protocol tcp --port 22 --cidr ${cidr} --profile ${name}
@@ -163,15 +175,24 @@ then
 fi
 
 python ${scriptsDir}/spec.py ${ami} aws-key-${name} "${securityGroupId}" ${instanceType} ${subnetId} > ${dataDir}/launch-spec.json
-instanceId=$(aws ec2 request-spot-instances --spot-price "0.2" --instance-count 1 --type "one-time" --launch-specification file:/${dataDir}launch-spec.json --query 'SpotInstanceRequests[0].InstanceId' --output text --profile ${name})
-aws ec2 create-tags --resources ${instanceId} --tags --tags Key=Name,Value=${name}-gpu-machine --profile ${name}
-allocAddr=$(aws ec2 allocate-address --domain vpc --query 'AllocationId' --output text --profile ${name} --profile ${name})
+instanceReqId=$(aws ec2 request-spot-instances --spot-price "0.2" --instance-count 1 --type "one-time" --launch-specification file://${dataDir}/launch-spec.json --query 'SpotInstanceRequests[0].SpotInstanceRequestId' --output text --profile ${name})
+echo export instanceReqId=${instanceReqId} >> ${dataDir}/${name}-envs.txt
 
 echo Waiting for instance start...
+aws ec2 wait spot-instance-request-fulfilled --profile ${name} --spot-instance-request-ids ${instanceReqId}
+instanceId=$(aws ec2 describe-spot-instance-requests --profile optum --output text --filter "Name=spot-instance-request-id,Values=${instanceReqId}" --query 'SpotInstanceRequests[0].InstanceId')
+echo export instanceId=${instanceId} >> ${dataDir}/${name}-envs.txt
+
+aws ec2 create-tags --resources ${instanceId} --tags Key=Name,Value=${name}-gpu-machine --profile ${name}
+allocAddr=$(aws ec2 allocate-address --domain vpc --query 'AllocationId' --output text --profile ${name})
+echo export allocAddr=${allocAddr} >> ${dataDir}/${name}-envs.txt
+
 aws ec2 wait instance-running --instance-ids ${instanceId} --profile ${name}
 sleep 10 # wait for ssh service to start running too
 assocId=$(aws ec2 associate-address --instance-id ${instanceId} --allocation-id ${allocAddr} --query 'AssociationId' --output text --profile ${name})
+echo export assocId=${assocId} >> ${dataDir}/${name}-envs.txt
 instanceUrl=$(aws ec2 describe-instances --instance-ids ${instanceId} --query 'Reservations[0].Instances[0].PublicDnsName' --output text --profile ${name})
+echo export instanceUrl=${instanceUrl} >> ${dataDir}/${name}-envs.txt
 
 # save commands to file
 echo \# Connect to your instance: > ${dataDir}/${name}-commands.txt
@@ -183,20 +204,6 @@ echo aws ec2 start-instances --instance-ids ${instanceId} --profile ${name}  >> 
 echo \# Reboot your instance: >> ${dataDir}/${name}-commands.txt
 echo aws ec2 reboot-instances --instance-ids ${instanceId} --profile ${name}  >>${dataDir}/ ${name}-commands.txt
 echo ""
-
-# export vars to be sure
-echo instanceId=${instanceId} >> ${dataDir}/${name}-commands.txt
-echo subnetId=${subnetId} >> ${dataDir}/${name}-commands.txt
-echo securityGroupId=${securityGroupId} >> ${dataDir}/${name}-commands.txt
-echo instanceUrl=${instanceUrl} >> ${dataDir}/${name}-commands.txt
-echo routeTableId=${routeTableId} >> ${dataDir}/${name}-commands.txt
-echo name=${name} >> ${dataDir}/${name}-commands.txt
-echo vpcId=${vpcId} >> ${dataDir}/${name}-commands.txt
-echo internetGatewayId=${internetGatewayId} >> ${dataDir}/${name}-commands.txt
-echo subnetId=${subnetId} >> ${dataDir}/${name}-commands.txt
-echo allocAddr=${allocAddr} >> ${dataDir}/${name}-commands.txt
-echo assocId=${assocId} >> ${dataDir}/${name}-commands.txt
-echo routeTableAssoc=${routeTableAssoc} >> ${dataDir}/${name}-commands.txt
 
 # save delete commands for cleanup
 echo aws ec2 disassociate-address --association-id ${assocId} --profile ${name} > ${scriptsDir}/${name}-remove.sh
@@ -224,6 +231,7 @@ chmod +x ${scriptsDir}/*.sh
 echo All done. Find all you need to connect in the ${name}-commands.txt file and to remove the stack call ${scriptsDir}/${name}-remove.sh
 echo Connect to your instance: ssh -i ~/.ssh/aws-key-${name}.pem ubuntu@${instanceUrl}
 #+END_SRC
+
 
 *** System Installation
 
