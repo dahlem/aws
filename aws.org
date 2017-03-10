@@ -198,11 +198,11 @@ echo export instanceUrl=${instanceUrl} >> ${dataDir}/${name}-envs.txt
 echo \# Connect to your instance: > ${dataDir}/${name}-commands.txt
 echo ssh -i ~/.ssh/aws-key-${name}.pem ubuntu@${instanceUrl} >> ${dataDir}/${name}-commands.txt
 echo \# Stop your instance: : >> ${dataDir}/${name}-commands.txt
-echo aws ec2 stop-instances --instance-ids ${instanceId} --profile ${name}  >> ${dataDir}/${name}-commands.txt
+echo aws ec2 stop-instances --instance-ids ${instanceId} --profile ${name} >> ${dataDir}/${name}-commands.txt
 echo \# Start your instance: >> ${dataDir}/${name}-commands.txt
-echo aws ec2 start-instances --instance-ids ${instanceId} --profile ${name}  >> ${dataDir}/${name}-commands.txt
+echo aws ec2 start-instances --instance-ids ${instanceId} --profile ${name} >> ${dataDir}/${name}-commands.txt
 echo \# Reboot your instance: >> ${dataDir}/${name}-commands.txt
-echo aws ec2 reboot-instances --instance-ids ${instanceId} --profile ${name}  >>${dataDir}/ ${name}-commands.txt
+echo aws ec2 reboot-instances --instance-ids ${instanceId} --profile ${name} >> ${dataDir}/ ${name}-commands.txt
 echo ""
 
 # save delete commands for cleanup
@@ -232,7 +232,6 @@ echo All done. Find all you need to connect in the ${name}-commands.txt file and
 echo Connect to your instance: ssh -i ~/.ssh/aws-key-${name}.pem ubuntu@${instanceUrl}
 #+END_SRC
 
-
 *** System Installation
 
 This script sets up the Ubuntu environment with the appropriate
@@ -242,6 +241,9 @@ to Python 2.7 and 3.5 respectively. However, the Baidu deepspeech
 implementation is only supported on Python 2.7.
 
 #+BEGIN_SRC sh :tangle scripts/system-setup.sh
+set -x
+set -e
+
 ## system update
 sudo locale-gen en_IE.UTF-8
 sudo apt-get update
@@ -249,9 +251,6 @@ sudo apt-get --assume-yes upgrade
 sudo apt-get --assume-yes install build-essential gcc-5 g++-5 make binutils cmake sox gcc-4.8 g++-4.8
 
 ## set the gcc version
-sudo update-alternatives --remove-all gcc 
-sudo update-alternatives --remove-all g++
-
 sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-4.8 10
 sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-5 20
 
@@ -264,8 +263,8 @@ sudo update-alternatives --set cc /usr/bin/gcc
 sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++ 30
 sudo update-alternatives --set c++ /usr/bin/g++
 
-sudo update-alternatives --set gcc /usr/bin/gcc-4.8
-sudo update-alternatives --set g++ /usr/bin/g++-4.8
+sudo update-alternatives --set gcc /usr/bin/gcc-5
+sudo update-alternatives --set g++ /usr/bin/g++-5
 
 mkdir downloads
 cd downloads
@@ -275,21 +274,28 @@ cd downloads
 CUDA_REPO_PKG=cuda-repo-ubuntu1604_8.0.44-1_amd64.deb
 wget http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1604/x86_64/${CUDA_REPO_PKG} -O ${CUDA_REPO_PKG}
 sudo dpkg -i ${CUDA_REPO_PKG}
-rm -f ${CUDA_REPO_PKG}
 
 sudo apt-get update
-sudo apt-get install -y cuda libcudnn5 libcupti-dev
+sudo apt-get install -y cuda libcupti-dev
 sudo modprobe nvidia
 nvidia-smi
+
+## install libcudnn
+read -p "Press [Enter] once you downloaded libcudnn into ~/downloads..."
+sudo dpkg -i libcudnn.deb
+
+sudo update-alternatives --set gcc /usr/bin/gcc-4.8
+sudo update-alternatives --set g++ /usr/bin/g++-4.8
 
 ## Anaconda installation
 wget "https://repo.continuum.io/archive/Anaconda2-4.3.0-Linux-x86_64.sh"
 bash Anaconda2-4.3.0-Linux-x86_64.sh -b
 echo "export PATH=\"$HOME/anaconda2/bin:\$PATH\"" >> ~/.bashrc
 export PATH="$HOME/anaconda2/bin:$PATH"
+source ~/.bashrc
 
 ## python 3.5
-conda create -n py35 python=3.5 anaconda
+conda create -y -n py35 python=3.5 anaconda
 source activate py35
 conda upgrade -y --all
 conda install -y bcolz
@@ -324,7 +330,7 @@ c.NotebookApp.open_browser = False" >> $HOME/.jupyter/jupyter_notebook_config.py
 source deactivate py35
 
 ## python 2.7
-conda create -n py27 python=2.7 anaconda
+conda create -y -n py27 python=2.7 anaconda
 source activate py27
 conda upgrade -y --all
 conda install -y bcolz
@@ -337,6 +343,8 @@ pip install --ignore-installed --upgrade https://storage.googleapis.com/tensorfl
 
 ## we only install this for python 2.7, because deepspeech is not supported on python 3.x
 ## install Baidu's CTC activation function and corresponding pytorch bindings
+mkdir githubs
+cd ~/githubs
 git clone https://github.com/SeanNaren/warp-ctc.git
 cd warp-ctc
 mkdir build; cd build
@@ -346,11 +354,7 @@ export CUDA_HOME="/usr/local/cuda"
 cd ../pytorch_binding
 python setup.py install
 
-cd
-rm -rf downloads/
-
 ## install deepspeech
-mkdir githubs
 cd ~/githubs
 git clone https://github.com/SeanNaren/deepspeech.pytorch.git
 cd deepspeech.pytorch
@@ -383,4 +387,47 @@ cd data; PYTHONPATH=~/githubs/deepspeech.pytorch python an4.py
 cd ~/githubs/deepspeech.pytorch
 python train.py --train_manifest data/train_manifest.csv --val_manifest data/val_manifest.csv
 source deactivate py27
+#+END_SRC
+
+** Screen
+GNU screen allows one to open a terminal session and persist it before
+logging out of the server.
+
+Secure copy this screen configuration into the home directory of the
+server.
+
+#+BEGIN_SRC screen :tangle data/.screenrc
+# GNU Screen - main configuration file
+
+# Allow bold colors - necessary for some reason
+attrcolor b ".I"
+
+# Tell screen how to set colors. AB = background, AF=foreground
+termcapinfo xterm 'Co#256:AB=\E[48;5;%dm:AF=\E[38;5;%dm'
+
+# Enables use of shift-PgUp and shift-PgDn
+termcapinfo xterm|xterms|xs|rxvt ti@:te@
+
+# Erase background with current bg color
+defbce "on"
+
+# Enable 256 color term
+term xterm-256color
+
+# Cache 30000 lines for scroll back
+defscrollback 30000
+
+hardstatus alwayslastline
+
+# Very nice tabbed colored hardstatus line
+hardstatus string '%{= Kd} %{= Kd}%-w%{= Kr}[%{= KW}%n %t%{= Kr}]%{= Kd}%+w %-= %{KG} %H%{KW}|%{KY}%101`%{KW}|%D %M %d %Y%{= Kc} %C%A%{-}'
+
+# change command character from ctrl-a to ctrl-b (emacs users may want this)
+escape ^Bb
+
+# Hide hardstatus: ctrl-a f
+bind f eval "hardstatus ignore"
+
+# Show hardstatus: ctrl-a F
+bind F eval "hardstatus alwayslastline"
 #+END_SRC
