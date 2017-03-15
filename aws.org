@@ -70,7 +70,7 @@ accommodate creating spot instances instead of an on-demand instance.
 The following variables are needed.
 
 #+name: instanceType
- : "p2.xlarge"
+ : p2.xlarge
 
 We work off an AWS supplied image of Ubuntu 16.04 (ami-405f7226 in the
 eu-west-1 region). If you launch this script in a different
@@ -84,18 +84,18 @@ deepspeech environment with custom pytorch bindings for speech to text
 transcriptions in py27.
 
 #+name: ami
- : "ami-405f7226"
+ : ami-405f7226
 
 #+name: region
- : "eu-west-1"
+ : eu-west-1
 
 The following variable is the profile name.
 
 #+name: name
- : "ddahlem"
+ : ddahlem
 
 #+name: cidr
- : "0.0.0.0/0"
+ : 0.0.0.0/0
 
 The following script just creates a JSON launch specification to
 create spot instances.
@@ -202,7 +202,7 @@ echo aws ec2 stop-instances --instance-ids ${instanceId} --profile ${name} >> ${
 echo \# Start your instance: >> ${dataDir}/${name}-commands.txt
 echo aws ec2 start-instances --instance-ids ${instanceId} --profile ${name} >> ${dataDir}/${name}-commands.txt
 echo \# Reboot your instance: >> ${dataDir}/${name}-commands.txt
-echo aws ec2 reboot-instances --instance-ids ${instanceId} --profile ${name} >> ${dataDir}/ ${name}-commands.txt
+echo aws ec2 reboot-instances --instance-ids ${instanceId} --profile ${name} >> ${dataDir}/${name}-commands.txt
 echo ""
 
 # save delete commands for cleanup
@@ -284,6 +284,8 @@ nvidia-smi
 read -p "Press [Enter] once you downloaded libcudnn into ~/downloads..."
 sudo dpkg -i libcudnn.deb
 
+
+
 sudo update-alternatives --set gcc /usr/bin/gcc-4.8
 sudo update-alternatives --set g++ /usr/bin/g++-4.8
 
@@ -302,6 +304,7 @@ conda install -y bcolz
 conda install -y pytorch torchvision cuda80 -c soumith
 
 pip install theano
+pip install lasagne
 echo "[global]
 device = gpu
 floatX = float32
@@ -337,6 +340,7 @@ conda install -y bcolz
 conda install -y pytorch torchvision cuda80 -c soumith
 
 pip install theano
+pip install lasagne
 pip install keras
 pip install hyperas
 pip install --ignore-installed --upgrade https://storage.googleapis.com/tensorflow/linux/gpu/tensorflow_gpu-1.0.0-cp27-none-linux_x86_64.whl
@@ -352,6 +356,17 @@ cmake ..
 make
 export CUDA_HOME="/usr/local/cuda"
 cd ../pytorch_binding
+python setup.py install
+
+## install the theano binding
+sudo apt-get install libav-tools
+pip install soundfile
+cd ~/githubs
+git clone https://github.com/sherjilozair/ctc.git
+mkdir build; cd build
+cmake ..
+make
+cd ../python
 python setup.py install
 
 ## install deepspeech
@@ -430,4 +445,58 @@ bind f eval "hardstatus ignore"
 
 # Show hardstatus: ctrl-a F
 bind F eval "hardstatus alwayslastline"
+#+END_SRC
+** Cleanup
+*** Address-space
+#+BEGIN_SRC sh :tangle scripts/cleanup-addresses.sh :var name=name
+assocIds=$(aws ec2 describe-addresses --profile ${name} --output text --query "Addresses[*].AssociationId")
+for a in assocIds; do
+    aws ec2 disassociate-address --association-id ${a} --profile ${name}
+    aws ec2 release-address --allocation-id ${a} --profile ${name}
+done
+#+END_SRC
+
+*** Instances
+#+BEGIN_SRC sh :tangle scripts/cleanup-instances.sh :var name=name
+instances=$(aws ec2 describe-instances --profile ${name} --output text --query "Reservations[*].Instances[*].InstanceId")
+for i in instances; do
+    aws ec2 terminate-instances --instance-ids ${i} --profile ${name}
+    aws ec2 wait instance-terminated --instance-ids ${i} --profile ${name}
+done
+#+END_SRC
+
+*** Security groups
+#+BEGIN_SRC sh :tangle scripts/cleanup-security-group.sh :var name=name
+groups=$(aws ec2 describe-security-groups --profile ${name} --output text --filter "Name=group-name,Values=${name}-security-group" --query "SecurityGroups[*].GroupId")
+for g in groups; do
+    aws ec2 delete-security-group --group-id ${s} --profile ${name}
+done
+#+END_SRC
+
+*** Route Tables
+#+BEGIN_SRC sh :tangle scripts/cleanup-route-tables.sh :var name=name
+associations=$(aws ec2 describe-route-tables --profile ${name} --output text --filter "Name=association.main,Values=false" --query "RouteTables[*].Associations[*].RouteTableAssociationsId")
+for a in associations; do
+    aws ec2 disassociate-route-table --association-id ${a} --profile ${name}
+done
+
+tables=$(aws ec2 describe-route-tables --profile ${name} --output text --filter "Name=association.main,Values=false" --query "RouteTables[*].RouteTableId")
+for t in tables; do
+    aws ec2 delete-route-table --route-table-id ${t} --profile ${name}
+done
+#+END_SRC
+
+*** Internet Gateways
+#+BEGIN_SRC sh :tangle scripts/cleanup-internet-gateways.sh :var name=name
+vpcs=$(aws ec2 describe-internet-gateways --profile ${name} --output text --filter "Name=tag:Name,Values=${name}-subnet" --query "InternetGateways[*].Attachments[*].VpcId")
+igws=$(aws ec2 describe-internet-gateways --profile ${name} --output text --filter "Name=tag:Name,Values=${name}-subnet" --query "InternetGateways[*].InternetGatewayId")
+vis=$(paste <(echo "$vpcs") <(echo "$igws") --delimiters ';')
+
+for vi in vis; do
+    IFS=';' read -ra pair <<< "${vi}"
+    v=${pair[0]}
+    i=${pair[1]}
+    echo "${v}, ${i}"
+done
+
 #+END_SRC
