@@ -72,11 +72,17 @@ The following variables are needed.
 #+name: instanceType
  : p2.xlarge
 
+For spot instances we give a max price to adhere to in order to
+request an instance.
+
+#+name: maxPrice
+ : 0.25
+
 We work off an AWS supplied image of Ubuntu 16.04 (ami-405f7226 in the
 eu-west-1 region). If you launch this script in a different
 environment you'd to find a corresponding AMI ID. The script below was
 used to create a dedicated deep learning environment
-(ami-c21b31a4). that includes several python-based deep learning
+(ami-c21b31a4) that includes several python-based deep learning
 libraries, i.e., pytorch, theano, tensorflow, and keras. Those
 libraries are installed in two Anaconda environments, one for python
 2.7 (py27) and one for python 3.5 (py35). We also loaded up a
@@ -121,41 +127,74 @@ print(json.dumps({
 }, indent=4))
 #+END_SRC
 
+#+BEGIN_SRC python :tangle scripts/cleanup.py
+import csv, sys
+
+if len(sys.argv) == 2:
+    envsFile = csv.reader(open(sys.argv[1], 'r'), delimiter='=')
+
+    envsDict = {}
+    for e in envsFile:
+        envsDict[e[0]] = e[1]
+
+    print('set -x')
+    if 'assocId' in envsDict:
+        print('aws ec2 disassociate-address --profile {0:s} --association-id {1:s}'.format(envsDict['name'], envsDict['assocId']))
+    if 'allocAddr' in envsDict:
+        print('aws ec2 release-address --profile {0:s} --allocation-id {1:s}'.format(envsDict['name'], envsDict['allocAddr']))
+    if 'instanceId' in envsDict:
+        print('aws ec2 terminate-instances --profile {0:s} --instance-ids {1:s}'.format(envsDict['name'], envsDict['instanceId']))
+        print('aws ec2 wait instance-terminated --profile {0:s} --instance-ids {1:s}'.format(envsDict['name'], envsDict['instanceId']))
+    if 'securityGroupId' in envsDict:
+        print('aws ec2 delete-security-group --profile {0:s} --group-id {1:s}'.format(envsDict['name'], envsDict['securityGroupId']))
+    if 'routeTableAssoc' in envsDict:
+        print('aws ec2 disassociate-route-table --profile {0:s} --association-id {1:s}'.format(envsDict['name'], envsDict['routeTableAssoc']))
+    if 'routeTableId' in envsDict:
+        print('aws ec2 delete-route-table --profile {0:s} --route-table-id {1:s}'.format(envsDict['name'], envsDict['routeTableId']))
+    if 'internetGatewayId' in envsDict and 'vpcId' in envsDict:
+        print('aws ec2 detach-internet-gateway --profile {0:s} --internet-gateway-id {1:s} --vpc-id {2:s}'.format(envsDict['name'], envsDict['internetGatewayId'], envsDict['vpcId']))
+        print('aws ec2 delete-internet-gateway --profile {0:s} --internet-gateway-id {1:s}'.format(envsDict['name'], envsDict['internetGatewayId']))
+    if 'subnetId' in envsDict:
+        print('aws ec2 delete-subnet --profile {0:s} --subnet-id {1:s}'.format(envsDict['name'], envsDict['subnetId']))
+    if 'vpcId' in envsDict:
+        print('aws ec2 delete-vpc --profile {0:s} --vpc-id {1:s}'.format(envsDict['name'], envsDict['vpcId']))
+#+END_SRC
+
 The following script is mainly taken from Jeremy Howard with some
 modifications to launch spot instances and to differentiate between
 AWS profiles.
 
-#+BEGIN_SRC sh :tangle scripts/setup.sh :var instanceType=instanceType :var ami=ami :var name=name :var cidr=cidr :var scriptsDir=scriptsDir :var dataDir=dataDir
+#+BEGIN_SRC sh :tangle scripts/setup.sh :var instanceType=instanceType :var ami=ami :var name=name :var cidr=cidr :var scriptsDir=scriptsDir :var dataDir=dataDir :var maxPrice=maxPrice
 set -x ## print the commands
 set -e ## fail script if one command returns zero
 
-echo export name=${name} > ${dataDir}/${name}-envs.txt
-echo export instanceType=${instanceType} >> ${dataDir}/${name}-envs.txt
+echo name=${name} > ${dataDir}/${name}-envs.txt
+echo instanceType=${instanceType} >> ${dataDir}/${name}-envs.txt
 
 vpcId=$(aws ec2 create-vpc --cidr-block 10.0.0.0/28 --query 'Vpc.VpcId' --output text --profile ${name})
-echo export vpcId=${vpcId} >> ${dataDir}/${name}-envs.txt
+echo vpcId=${vpcId} >> ${dataDir}/${name}-envs.txt
 aws ec2 create-tags --resources ${vpcId} --tags Key=Name,Value=${name}  --profile ${name}
 aws ec2 modify-vpc-attribute --vpc-id ${vpcId} --enable-dns-support "{\"Value\":true}" --profile ${name}
 aws ec2 modify-vpc-attribute --vpc-id ${vpcId} --enable-dns-hostnames "{\"Value\":true}" --profile ${name}
 
 internetGatewayId=$(aws ec2 create-internet-gateway --query 'InternetGateway.InternetGatewayId' --output text  --profile ${name})
-echo export internetGatewayId=${internetGatewayId} >> ${dataDir}/${name}-envs.txt
+echo internetGatewayId=${internetGatewayId} >> ${dataDir}/${name}-envs.txt
 aws ec2 create-tags --resources ${internetGatewayId} --tags --tags Key=Name,Value=${name}-gateway --profile ${name}
 aws ec2 attach-internet-gateway --internet-gateway-id ${internetGatewayId} --vpc-id ${vpcId} --profile ${name}
 
 subnetId=$(aws ec2 create-subnet --vpc-id ${vpcId} --cidr-block 10.0.0.0/28 --query 'Subnet.SubnetId' --output text --profile ${name})
-echo export subnetId=${subnetId} >> ${dataDir}/${name}-envs.txt
+echo subnetId=${subnetId} >> ${dataDir}/${name}-envs.txt
 aws ec2 create-tags --resources ${internetGatewayId} --tags --tags Key=Name,Value=${name}-subnet --profile ${name}
 
 routeTableId=$(aws ec2 create-route-table --vpc-id ${vpcId} --query 'RouteTable.RouteTableId' --output text --profile ${name})
-echo export routeTableId=${routeTableId} >> ${dataDir}/${name}-envs.txt
+echo routeTableId=${routeTableId} >> ${dataDir}/${name}-envs.txt
 aws ec2 create-tags --resources ${routeTableId} --tags --tags Key=Name,Value=${name}-route-table --profile ${name}
 routeTableAssoc=$(aws ec2 associate-route-table --route-table-id ${routeTableId} --subnet-id ${subnetId} --output text --profile ${name})
-echo export routeTableAssoc=${routeTableAssoc} >> ${dataDir}/${name}-envs.txt
+echo routeTableAssoc=${routeTableAssoc} >> ${dataDir}/${name}-envs.txt
 aws ec2 create-route --route-table-id ${routeTableId} --destination-cidr-block 0.0.0.0/0 --gateway-id ${internetGatewayId} --profile ${name}
 
 securityGroupId=$(aws ec2 create-security-group --group-name ${name}-security-group --description "SG for ddahlem GPU machine" --vpc-id ${vpcId} --query 'GroupId' --output text --profile ${name})
-echo export securityGroupId=${securityGroupId} >> ${dataDir}/${name}-envs.txt
+echo securityGroupId=${securityGroupId} >> ${dataDir}/${name}-envs.txt
 
 # ssh
 aws ec2 authorize-security-group-ingress --group-id ${securityGroupId} --protocol tcp --port 22 --cidr ${cidr} --profile ${name}
@@ -175,24 +214,24 @@ then
 fi
 
 python ${scriptsDir}/spec.py ${ami} aws-key-${name} "${securityGroupId}" ${instanceType} ${subnetId} > ${dataDir}/launch-spec.json
-instanceReqId=$(aws ec2 request-spot-instances --spot-price "0.2" --instance-count 1 --type "one-time" --launch-specification file://${dataDir}/launch-spec.json --query 'SpotInstanceRequests[0].SpotInstanceRequestId' --output text --profile ${name})
-echo export instanceReqId=${instanceReqId} >> ${dataDir}/${name}-envs.txt
+instanceReqId=$(aws ec2 request-spot-instances --spot-price ${maxPrice} --instance-count 1 --type "one-time" --launch-specification file://${dataDir}/launch-spec.json --query 'SpotInstanceRequests[0].SpotInstanceRequestId' --output text --profile ${name})
+echo instanceReqId=${instanceReqId} >> ${dataDir}/${name}-envs.txt
 
 echo Waiting for instance start...
 aws ec2 wait spot-instance-request-fulfilled --profile ${name} --spot-instance-request-ids ${instanceReqId}
 instanceId=$(aws ec2 describe-spot-instance-requests --profile ${name} --output text --filter "Name=spot-instance-request-id,Values=${instanceReqId}" --query 'SpotInstanceRequests[0].InstanceId')
-echo export instanceId=${instanceId} >> ${dataDir}/${name}-envs.txt
+echo instanceId=${instanceId} >> ${dataDir}/${name}-envs.txt
 
 aws ec2 create-tags --resources ${instanceId} --tags Key=Name,Value=${name}-gpu-machine --profile ${name}
 allocAddr=$(aws ec2 allocate-address --domain vpc --query 'AllocationId' --output text --profile ${name})
-echo export allocAddr=${allocAddr} >> ${dataDir}/${name}-envs.txt
+echo allocAddr=${allocAddr} >> ${dataDir}/${name}-envs.txt
 
 aws ec2 wait instance-running --instance-ids ${instanceId} --profile ${name}
 sleep 10 # wait for ssh service to start running too
 assocId=$(aws ec2 associate-address --instance-id ${instanceId} --allocation-id ${allocAddr} --query 'AssociationId' --output text --profile ${name})
-echo export assocId=${assocId} >> ${dataDir}/${name}-envs.txt
+echo assocId=${assocId} >> ${dataDir}/${name}-envs.txt
 instanceUrl=$(aws ec2 describe-instances --instance-ids ${instanceId} --query 'Reservations[0].Instances[0].PublicDnsName' --output text --profile ${name})
-echo export instanceUrl=${instanceUrl} >> ${dataDir}/${name}-envs.txt
+echo instanceUrl=${instanceUrl} >> ${dataDir}/${name}-envs.txt
 
 # save commands to file
 echo \# Connect to your instance: > ${dataDir}/${name}-commands.txt
@@ -205,26 +244,11 @@ echo \# Reboot your instance: >> ${dataDir}/${name}-commands.txt
 echo aws ec2 reboot-instances --instance-ids ${instanceId} --profile ${name} >> ${dataDir}/${name}-commands.txt
 echo ""
 
-# save delete commands for cleanup
-echo aws ec2 disassociate-address --association-id ${assocId} --profile ${name} > ${scriptsDir}/${name}-remove.sh
-echo aws ec2 release-address --allocation-id ${allocAddr} --profile ${name} >> ${scriptsDir}/${name}-remove.sh
-
-# volume gets deleted with the instance automatically
-echo aws ec2 terminate-instances --instance-ids ${instanceId} --profile ${name} >> ${scriptsDir}/${name}-remove.sh
-echo aws ec2 wait instance-terminated --instance-ids ${instanceId} --profile ${name} >> ${scriptsDir}/${name}-remove.sh
-echo aws ec2 delete-security-group --group-id ${securityGroupId} --profile ${name} >> ${scriptsDir}/${name}-remove.sh
-
-echo aws ec2 disassociate-route-table --association-id ${routeTableAssoc} --profile ${name} >> ${scriptsDir}/${name}-remove.sh
-echo aws ec2 delete-route-table --route-table-id ${routeTableId} --profile ${name} >> ${scriptsDir}/${name}-remove.sh
-
-echo aws ec2 detach-internet-gateway --internet-gateway-id ${internetGatewayId} --vpc-id ${vpcId} --profile ${name} >> ${scriptsDir}/${name}-remove.sh
-echo aws ec2 delete-internet-gateway --internet-gateway-id ${internetGatewayId} --profile ${name} >> ${scriptsDir}/${name}-remove.sh
-echo aws ec2 delete-subnet --subnet-id ${subnetId} --profile ${name} >> ${scriptsDir}/${name}-remove.sh
-
-echo aws ec2 delete-vpc --vpc-id ${vpcId} --profile ${name} >> ${scriptsDir}/${name}-remove.sh
-echo echo If you want to delete the key-pair, please do it manually. >> ${scriptsDir}/${name}-remove.sh
-
+# create image
 echo aws ec2 create-image --instance-id ${instanceId} --name "Deep Learning Server" --description "An AMI for Deep Learning on NVIDIA GPUs" --block-device-mappings "[{\"DeviceName\": \"/dev/sda1\",\"Ebs\":{\"VolumeSize\":128, \"VolumeType\": \"gp2\"}}]" --profile ${name} > ${scriptsDir}/${name}-create-image.sh
+
+# create cleanup script
+python ${scriptsDir}/cleanup.py ${dataDir}/${name}-envs.txt > ${scriptsDir}/cleanup.sh
 
 chmod +x ${scriptsDir}/*.sh
 
@@ -249,6 +273,7 @@ sudo locale-gen en_IE.UTF-8
 sudo apt-get update
 sudo apt-get --assume-yes upgrade
 sudo apt-get --assume-yes install build-essential gcc-5 g++-5 make binutils cmake sox gcc-4.8 g++-4.8
+sudo apt-get --assume-yes install libav-tools
 
 ## set the gcc version
 sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-4.8 10
@@ -359,7 +384,6 @@ cd ../pytorch_binding
 python setup.py install
 
 ## install the theano binding
-sudo apt-get install libav-tools
 pip install soundfile
 cd ~/githubs
 git clone https://github.com/sherjilozair/ctc.git
@@ -368,6 +392,34 @@ cmake ..
 make
 cd ../python
 python setup.py install
+
+## install ba-dl-deepspeech
+pip install -r https://raw.githubusercontent.com/Lasagne/Lasagne/master/requirements.txt
+pip install https://github.com/Lasagne/Lasagne/archive/master.zip
+
+cd ~
+mkdir downloads
+cd downloads
+wget https://github.com/fchollet/keras/archive/1.1.0.tar.gz
+tar xzf 1.1.0.tar.gz
+cd keras-1.1.0
+python setup.py install --user
+
+cd ~/githubs/
+git clone https://github.com/baidu-research/ba-dls-deepspeech.git
+mkdir data
+cd data
+wget http://www.openslr.org/resources/12/dev-clean.tar.gz
+wget http://www.openslr.org/resources/12/train-clean-100.tar.gz
+tar xzf dev-clean.tar.gz
+tar xzf train-clean-100.tar.gz
+cd ..
+./flac_to_wav.sh
+python create_desc_json.py data/LibriSpeech/dev-clean data/LibriSpeech/dev-clean-manifest.json
+python create_desc_json.py data/LibriSpeech/train-clean-100 data/LibriSpeech/train-clean-100-manifest.json
+
+## adjust the layers, learning rate, clip-norm in the train and model.py
+python train.py data/LibriSpeech/train-clean-100-manifest.json data/LibriSpeech/dev-clean-manifest.json data/LibriSpeech/train-100-model/
 
 ## install deepspeech
 cd ~/githubs
