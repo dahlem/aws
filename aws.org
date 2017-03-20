@@ -257,14 +257,37 @@ echo Connect to your instance: ssh -i ~/.ssh/aws-key-${name}.pem ubuntu@${instan
 #+END_SRC
 
 *** System Installation
-
+**** Environment Setup
 This script sets up the Ubuntu environment with the appropriate
 libraries to perform deep learning model training using python using
-NVIDIA tools. It also sets up Anaconda with two environments dedicated
-to Python 2.7 and 3.5 respectively. However, the Baidu deepspeech
-implementation is only supported on Python 2.7.
+NVIDIA tools. It also sets up Anaconda with dedicated
+environments. For 'ease of use' we install python DNN libraries using
+anaconda in the selected environment. For special purpose tasks, e.g.,
+speech to text, we use a dedicated environment with concrete supported
+versions of the related libraries.
 
-#+BEGIN_SRC sh :tangle scripts/system-setup.sh
+We also make a distinction between gcc-4 and gcc-5. Main Ubuntu
+libraries are build using gcc-5 and the user-level libraries that live
+within anaconda are build using gcc-4. For this reason we need to
+select the appropriate version during the setup script.
+
+The below table lists the two python environments to be created for
+Anaconda.
+
+#+name: envs
+| py27 | 2.7 |
+| py35 | 3.5 |
+
+The following variable declares the main environment to use.
+
+#+name: mainEnv
+ : py35
+
+The Jupyter setup facilitates choosing a kernel as in switching
+between the Anaconda environments. However, the Jupyter server runs
+off the main environment.
+
+#+BEGIN_SRC sh :tangle scripts/system-setup.sh :var envs=envs :var mainEnv=mainEnv
 set -x
 set -e
 
@@ -309,8 +332,6 @@ nvidia-smi
 read -p "Press [Enter] once you downloaded libcudnn into ~/downloads..."
 sudo dpkg -i libcudnn.deb
 
-
-
 sudo update-alternatives --set gcc /usr/bin/gcc-4.8
 sudo update-alternatives --set g++ /usr/bin/g++-4.8
 
@@ -321,23 +342,13 @@ echo "export PATH=\"$HOME/anaconda2/bin:\$PATH\"" >> ~/.bashrc
 export PATH="$HOME/anaconda2/bin:$PATH"
 source ~/.bashrc
 
-## python 3.5
-conda create -y -n py35 python=3.5 anaconda
-source activate py35
-conda upgrade -y --all
-conda install -y bcolz
-conda install -y pytorch torchvision cuda80 -c soumith
-
-pip install theano
-pip install lasagne
+## install into all environments
 echo "[global]
 device = gpu
 floatX = float32
 [cuda]
 root = /usr/local/cuda" > ~/.theanorc
 
-pip install keras
-pip install hyperas
 mkdir ~/.keras
 echo '{
     "image_dim_ordering": "th",
@@ -346,32 +357,49 @@ echo '{
     "backend": "theano"
 }' > ~/.keras/keras.json
 
-pip install --ignore-installed --upgrade https://storage.googleapis.com/tensorflow/linux/gpu/tensorflow_gpu-1.0.0-cp35-cp35m-linux_x86_64.whl
+while IFS= read -r env; do
+    e=(${env})
+    environment=${e[0]}
+    pythonVersion=${e[1]}
+    conda create -y -n ${environment} python=${pythonVersion} anaconda
+    source activate ${environment}
+    conda upgrade -y --all
+    conda install -y bcolz
+    conda install -y pytorch torchvision cuda80 -c soumith
+    pip install theano
+    pip install lasagne
+    pip install keras
+    pip install hyperas
+    pip install --ignore-installed --upgrade https://storage.googleapis.com/tensorflow/linux/gpu/tensorflow_gpu-1.0.0-cp35-cp35m-linux_x86_64.whl
+    pip install environment_kernels
+    source deactivate ${environment}
+done <<< "${envs}"
 
 ## configure jupyter and prompt for password
+source activate ${mainEnv}
 jupyter notebook --generate-config
 jupass=$(python -c "from notebook.auth import passwd; print(passwd())")
 echo "c.NotebookApp.password = u'"${jupass}"'" >> $HOME/.jupyter/jupyter_notebook_config.py
-echo "c.NotebookApp.ip = '*'
-c.NotebookApp.open_browser = False" >> $HOME/.jupyter/jupyter_notebook_config.py
+echo "c.NotebookApp.ip = '*'" >> $HOME/.jupyter/jupyter_notebook_config.py
+echo "c.NotebookApp.open_browser = False" >> $HOME/.jupyter/jupyter_notebook_config.py
+echo "c.NotebookApp.kernel_spec_manager_class = 'environment_kernels.EnvironmentKernelSpecManager'"  >> $HOME/.jupyter/jupyter_notebook_config.py
+#+END_SRC
 
-source deactivate py35
+**** Baidu's Deepspeech setup
 
-## python 2.7
-conda create -y -n py27 python=2.7 anaconda
-source activate py27
-conda upgrade -y --all
-conda install -y bcolz
-conda install -y pytorch torchvision cuda80 -c soumith
+The following script sets up the deepspeech environment.
 
-pip install theano
-pip install lasagne
-pip install keras
-pip install hyperas
-pip install --ignore-installed --upgrade https://storage.googleapis.com/tensorflow/linux/gpu/tensorflow_gpu-1.0.0-cp27-none-linux_x86_64.whl
+#+BEGIN_SRC sh :tangle scripts/deepspeech-system-setup.sh
+set -x
+set -e
+
+conda create -y -n deepspeech python=2.7 anaconda
+source activate deepspeech
+
+sudo update-alternatives --set gcc /usr/bin/gcc-4.8
+sudo update-alternatives --set g++ /usr/bin/g++-4.8
 
 ## we only install this for python 2.7, because deepspeech is not supported on python 3.x
-## install Baidu's CTC activation function and corresponding pytorch bindings
 mkdir githubs
 cd ~/githubs
 git clone https://github.com/SeanNaren/warp-ctc.git
@@ -381,7 +409,7 @@ cmake ..
 make
 export CUDA_HOME="/usr/local/cuda"
 cd ../pytorch_binding
-python setup.py install
+python setup.py install --user
 
 ## install the theano binding
 pip install soundfile
@@ -391,9 +419,30 @@ mkdir build; cd build
 cmake ..
 make
 cd ../python
-python setup.py install
+python setup.py install --user
 
 ## install ba-dl-deepspeech
+## multi-gpu setup
+cd ~/githubs/ 
+git clone https://github.com/NVIDIA/nccl.git
+cd nccl
+make
+sudo make install
+
+cd ~/githubs
+git clone https://github.com/Theano/libgpuarray.git
+cd libgpuarray
+mkdir build
+cd build
+cmake ..
+make
+sudo make install
+cd ..
+python setup.py build
+python setup.py install --user
+
+sudo ldconfig
+
 pip install -r https://raw.githubusercontent.com/Lasagne/Lasagne/master/requirements.txt
 pip install https://github.com/Lasagne/Lasagne/archive/master.zip
 
@@ -407,25 +456,6 @@ python setup.py install --user
 
 cd ~/githubs/
 git clone https://github.com/baidu-research/ba-dls-deepspeech.git
-mkdir data
-cd data
-wget http://www.openslr.org/resources/12/dev-clean.tar.gz
-wget http://www.openslr.org/resources/12/train-clean-100.tar.gz
-tar xzf dev-clean.tar.gz
-tar xzf train-clean-100.tar.gz
-cd ..
-./flac_to_wav.sh
-python create_desc_json.py data/LibriSpeech/dev-clean data/LibriSpeech/dev-clean-manifest.json
-python create_desc_json.py data/LibriSpeech/train-clean-100 data/LibriSpeech/train-clean-100-manifest.json
-
-## adjust the layers, learning rate, clip-norm in the train and model.py
-python train.py data/LibriSpeech/train-clean-100-manifest.json data/LibriSpeech/dev-clean-manifest.json data/LibriSpeech/train-100-model/
-
-## install deepspeech
-cd ~/githubs
-git clone https://github.com/SeanNaren/deepspeech.pytorch.git
-cd deepspeech.pytorch
-pip install -r requirements.txt
 #+END_SRC
 
 *** Test Deep Neural network libraries
@@ -454,6 +484,42 @@ cd data; PYTHONPATH=~/githubs/deepspeech.pytorch python an4.py
 cd ~/githubs/deepspeech.pytorch
 python train.py --train_manifest data/train_manifest.csv --val_manifest data/val_manifest.csv
 source deactivate py27
+#+END_SRC
+
+*** Data Preparation and Training
+**** Speech data for Deepspeech lib
+#+BEGIN_SRC sh :tangle scripts/deepspeech-data.sh
+set -x
+set -e
+
+conda create -y -n deepspeech python=2.7 anaconda
+source activate deepspeech
+
+sudo update-alternatives --set gcc /usr/bin/gcc-4.8
+sudo update-alternatives --set g++ /usr/bin/g++-4.8
+
+cd ~/githubs/ba-dls-deepspeech
+mkdir data
+cd data
+. ../download.sh
+. ../flac_to_wav.sh
+#+END_SRC
+
+**** Training on Data
+#+BEGIN_SRC sh :tangle scripts/deepspeech-data-train.sh
+set -x
+set -e
+
+source activate deepspeech
+
+sudo update-alternatives --set gcc /usr/bin/gcc-4.8
+sudo update-alternatives --set g++ /usr/bin/g++-4.8
+
+python create_desc_json.py data/LibriSpeech/dev-clean data/LibriSpeech/dev-clean-manifest.json
+python create_desc_json.py data/LibriSpeech/train-clean-100 data/LibriSpeech/train-clean-100-manifest.json
+
+## adjust the layers, learning rate, clip-norm in the train and model.py
+python train.py data/LibriSpeech/train-clean-100-manifest.json data/LibriSpeech/dev-clean-manifest.json data/LibriSpeech/train-100-model/
 #+END_SRC
 
 ** Screen
@@ -498,6 +564,7 @@ bind f eval "hardstatus ignore"
 # Show hardstatus: ctrl-a F
 bind F eval "hardstatus alwayslastline"
 #+END_SRC
+
 ** Cleanup
 *** Address-space
 #+BEGIN_SRC sh :tangle scripts/cleanup-addresses.sh :var name=name
