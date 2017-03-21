@@ -92,8 +92,18 @@ transcriptions in py27.
 #+name: ami
  : ami-405f7226
 
+We can specify the default region for our EC2 instances.
+
 #+name: region
  : eu-west-1
+
+Further to this, we might fix the availability zone in order to take
+advantage of the stability of the market for spot instances. You could
+run the [[#sec:util-price-hist]] script in order to find out which
+availability zone is more robust to price changes.
+
+#+name: az
+ : eu-west-1a
 
 The following variable is the profile name.
 
@@ -164,7 +174,7 @@ The following script is mainly taken from Jeremy Howard with some
 modifications to launch spot instances and to differentiate between
 AWS profiles.
 
-#+BEGIN_SRC sh :tangle scripts/setup.sh :var instanceType=instanceType :var ami=ami :var name=name :var cidr=cidr :var scriptsDir=scriptsDir :var dataDir=dataDir :var maxPrice=maxPrice
+#+BEGIN_SRC sh :tangle scripts/setup.sh :var instanceType=instanceType :var ami=ami :var name=name :var cidr=cidr :var scriptsDir=scriptsDir :var dataDir=dataDir :var maxPrice=maxPrice :var az=az
 set -x ## print the commands
 set -e ## fail script if one command returns zero
 
@@ -214,7 +224,7 @@ then
 fi
 
 python ${scriptsDir}/spec.py ${ami} aws-key-${name} "${securityGroupId}" ${instanceType} ${subnetId} > ${dataDir}/launch-spec.json
-instanceReqId=$(aws ec2 request-spot-instances --spot-price ${maxPrice} --instance-count 1 --type "one-time" --launch-specification file://${dataDir}/launch-spec.json --query 'SpotInstanceRequests[0].SpotInstanceRequestId' --output text --profile ${name})
+instanceReqId=$(aws ec2 request-spot-instances --spot-price ${maxPrice} --availability-zone-group ${az} --instance-count 1 --type "one-time" --launch-specification file://${dataDir}/launch-spec.json --query 'SpotInstanceRequests[0].SpotInstanceRequestId' --output text --profile ${name})
 echo instanceReqId=${instanceReqId} >> ${dataDir}/${name}-envs.txt
 
 echo Waiting for instance start...
@@ -296,6 +306,8 @@ sudo locale-gen en_IE.UTF-8
 sudo apt-get update
 sudo apt-get --assume-yes upgrade
 sudo apt-get --assume-yes install build-essential gcc-5 g++-5 make binutils cmake sox gcc-4.8 g++-4.8
+sudo apt-get --assume-yes install linux-source
+sudo apt-get --assume-yes install linux-headers-$(uname -r)
 sudo apt-get --assume-yes install libav-tools
 
 ## set the gcc version
@@ -319,18 +331,24 @@ cd downloads
 
 ## CUDA installation
 ## Access to CUDA packages
-CUDA_REPO_PKG=cuda-repo-ubuntu1604_8.0.44-1_amd64.deb
+CUDA_REPO_PKG=cuda-repo-ubuntu1604_8.0.61-1_amd64.deb
 wget http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1604/x86_64/${CUDA_REPO_PKG} -O ${CUDA_REPO_PKG}
 sudo dpkg -i ${CUDA_REPO_PKG}
 
 sudo apt-get update
-sudo apt-get install -y cuda libcupti-dev
+sudo apt-get install -y cuda libcupti-dev nvidia-cuda-dev
 sudo modprobe nvidia
 nvidia-smi
+
+echo "export PATH=\"/usr/local/cuda/bin:\$PATH\"" >> ~/.bashrc
+echo "export CUDA_HOME=\"/usr/local/cuda/bin:\$PATH\"" >> ~/.bashrc
+source ~/.bashrc
 
 ## install libcudnn
 read -p "Press [Enter] once you downloaded libcudnn into ~/downloads..."
 sudo dpkg -i libcudnn.deb
+
+sudo ldconfig
 
 sudo update-alternatives --set gcc /usr/bin/gcc-4.8
 sudo update-alternatives --set g++ /usr/bin/g++-4.8
@@ -339,7 +357,6 @@ sudo update-alternatives --set g++ /usr/bin/g++-4.8
 wget "https://repo.continuum.io/archive/Anaconda2-4.3.0-Linux-x86_64.sh"
 bash Anaconda2-4.3.0-Linux-x86_64.sh -b
 echo "export PATH=\"$HOME/anaconda2/bin:\$PATH\"" >> ~/.bashrc
-export PATH="$HOME/anaconda2/bin:$PATH"
 source ~/.bashrc
 
 ## install into all environments
@@ -370,7 +387,7 @@ while IFS= read -r env; do
     pip install lasagne
     pip install keras
     pip install hyperas
-    pip install --ignore-installed --upgrade https://storage.googleapis.com/tensorflow/linux/gpu/tensorflow_gpu-1.0.0-cp35-cp35m-linux_x86_64.whl
+    pip install tensorflow-gpu
     pip install environment_kernels
     source deactivate ${environment}
 done <<< "${envs}"
@@ -407,14 +424,12 @@ cd warp-ctc
 mkdir build; cd build
 cmake ..
 make
-export CUDA_HOME="/usr/local/cuda"
-cd ../pytorch_binding
-python setup.py install --user
 
 ## install the theano binding
 pip install soundfile
 cd ~/githubs
 git clone https://github.com/sherjilozair/ctc.git
+cd ctc
 mkdir build; cd build
 cmake ..
 make
@@ -432,8 +447,7 @@ sudo make install
 cd ~/githubs
 git clone https://github.com/Theano/libgpuarray.git
 cd libgpuarray
-mkdir build
-cd build
+mkdir build; cd build
 cmake ..
 make
 sudo make install
@@ -487,22 +501,24 @@ source deactivate py27
 #+END_SRC
 
 *** Data Preparation and Training
+
+Before doing anything data-specific we might wish to create a data
+volume, attach it and download all data and perform the computation on
+the mounted volume [[#sec:util-attach-vol]].
+
 **** Speech data for Deepspeech lib
 #+BEGIN_SRC sh :tangle scripts/deepspeech-data.sh
 set -x
 set -e
 
-conda create -y -n deepspeech python=2.7 anaconda
 source activate deepspeech
 
 sudo update-alternatives --set gcc /usr/bin/gcc-4.8
 sudo update-alternatives --set g++ /usr/bin/g++-4.8
 
-cd ~/githubs/ba-dls-deepspeech
-mkdir data
-cd data
-. ../download.sh
-. ../flac_to_wav.sh
+cd /data
+. ~/githubs/ba-dls-deepspeech/download.sh
+. ~/githubs/ba-dls-deepspeech/flac_to_wav.sh
 #+END_SRC
 
 **** Training on Data
@@ -616,6 +632,104 @@ for vi in vis; do
     v=${pair[0]}
     i=${pair[1]}
     echo "${v}, ${i}"
+done
+
+#+END_SRC
+** Utilities
+:PROPERTIES:
+:CUSTOM_ID: sec:utilities
+:END:
+
+*** Attach another volume to an EC2 instance
+:PROPERTIES:
+:CUSTOM_ID: sec:util-attach-vol
+:END:
+
+We may need to attach larger volumes to store data and compute
+outputs. We can add another volume to an existing EC2 instance. The
+following script accepts three parameters:
+ - S: the size in GB
+ - I: the instance-id
+ - D: the device name
+
+#+BEGIN_SRC sh :tangle scripts/add-volume.sh :var az=az :var name=name
+S=$1
+I=$2
+D=$3
+
+volumeId=$(aws ec2 create-volume \
+               --profile ${name} \
+               --size ${S} \
+               --volume-type gp2 \
+               --availability-zone ${az} \
+               --query "VolumeId" \
+               --output text)
+
+aws ec2 attach-volume \
+    --profile ${name} \
+    --volume-id ${volumeId} \
+    --instance-id ${I} \
+    --device ${D}
+#+END_SRC
+
+Once the volume is attached, we need to create a file system and mount it.
+
+Let's first check whether it has been attached.
+
+#+BEGIN_SRC sh
+lsblk
+#+END_SRC
+
+Now, we can create a file system
+
+#+BEGIN_SRC sh
+sudo mkfs -t ext4 <device-name>
+#+END_SRC
+
+Create the mount point
+
+#+BEGIN_SRC sh
+sudo mkdir mount_point
+#+END_SRC
+
+And mount it
+
+#+BEGIN_SRC sh
+sudo mount device_name mount_point
+#+END_SRC
+
+In order to persist this mount point we need to add it to /etc/fstab
+
+#+BEGIN_SRC sh
+sudo cp /etc/fstab /etc/fstab.orig
+#+END_SRC
+
+The fstab entry follows this format:
+
+device_name  mount_point  file_system_type  fs_mntops  fs_freq  fs_passno
+
+E.g., fs_mntops=defaults,nofail fs_freq=0 fs_passno=2
+
+*** Investigate spot price history
+:PROPERTIES:
+:CUSTOM_ID: sec:util-price-hist
+:END:
+
+The following script iterates through the availability zones of the
+current region and prints a statistical summary of the spot price
+history.
+
+#+BEGIN_SRC sh :tangle scripts/spot-price-summary.sh :var instanceType=instanceType
+azs=$(aws cloudhsm list-available-zones --output text --query 'AZList')
+for az in ${azs}; do
+    echo ${az}
+    aws ec2 describe-spot-price-history \
+        --instance-types p2.8xlarge \
+        --availability-zone ${az} \
+        --filters "Name=product-description,Values=Linux/UNIX" \
+        --output json --query "SpotPriceHistory[*].SpotPrice" \
+        |jq -r '.[]'\
+        |python -c "import sys, pandas as pd; df = pd.read_csv(sys.stdin, header=None, names=['price']); print(df.price.describe())"
 done
 
 #+END_SRC
