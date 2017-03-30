@@ -113,8 +113,35 @@ The following variable is the profile name.
 #+name: cidr
  : 0.0.0.0/0
 
+The following variables are used for tagging the resources for billing purposes.
+
+#+name: bu
+ : BU
+
+#+name: application
+ : App
+
+#+name: stack
+ : Dev
+
+#+name: owner
+ : ddahlem
+
+#+BEGIN_SRC sh :tangle scripts/tag4billing.sh :var bu=bu :var application=application :var stack=stack :var owner=owner :var name=name
+RESOURCE=$1
+
+aws ec2 create-tags --resources ${RESOURCE} --tags Key=BusinessUnit,Value=${bu} --profile ${name}
+aws ec2 create-tags --resources ${RESOURCE} --tags Key=Application,Value=${application} --profile ${name}
+aws ec2 create-tags --resources ${RESOURCE} --tags Key=Stack,Value=${stack} --profile ${name}
+aws ec2 create-tags --resources ${RESOURCE} --tags Key=Owner,Value=${owner} --profile ${name}
+
+#+END_SRC
+
 The following script just creates a JSON launch specification to
-create spot instances.
+create spot instances. Since we mostly use m4 or p2 instances, we can
+enable EBS optimisation without incurring an extra cost. Check the AWS
+documentation to make sure that no additional cost is added by
+enabling this feature.
 
 #+BEGIN_SRC python :tangle scripts/spec.py
 import json, sys
@@ -133,7 +160,8 @@ print(json.dumps({
                 'VolumeType': 'gp2'
             }
         }
-    ]
+    ],
+    'EbsOptimized': True,
 }, indent=4))
 #+END_SRC
 
@@ -183,34 +211,46 @@ echo instanceType=${instanceType} >> ${dataDir}/${name}-envs.txt
 
 vpcId=$(aws ec2 create-vpc --cidr-block 10.0.0.0/28 --query 'Vpc.VpcId' --output text --profile ${name})
 echo vpcId=${vpcId} >> ${dataDir}/${name}-envs.txt
-aws ec2 create-tags --resources ${vpcId} --tags Key=Name,Value=${name}  --profile ${name}
+aws ec2 create-tags --resources ${vpcId} --tags Key=Name,Value=${name} --profile ${name}
+${scriptsDir}/tag4billing.sh ${vpcId}
+
 aws ec2 modify-vpc-attribute --vpc-id ${vpcId} --enable-dns-support "{\"Value\":true}" --profile ${name}
 aws ec2 modify-vpc-attribute --vpc-id ${vpcId} --enable-dns-hostnames "{\"Value\":true}" --profile ${name}
 
-internetGatewayId=$(aws ec2 create-internet-gateway --query 'InternetGateway.InternetGatewayId' --output text  --profile ${name})
+internetGatewayId=$(aws ec2 create-internet-gateway --query 'InternetGateway.InternetGatewayId' --output text --profile ${name})
 echo internetGatewayId=${internetGatewayId} >> ${dataDir}/${name}-envs.txt
 aws ec2 create-tags --resources ${internetGatewayId} --tags --tags Key=Name,Value=${name}-gateway --profile ${name}
+${scriptsDir}/tag4billing.sh ${internetGatewayId}
+
 aws ec2 attach-internet-gateway --internet-gateway-id ${internetGatewayId} --vpc-id ${vpcId} --profile ${name}
 
-subnetId=$(aws ec2 create-subnet --vpc-id ${vpcId} --cidr-block 10.0.0.0/28 --query 'Subnet.SubnetId' --output text --profile ${name})
+subnetId=$(aws ec2 create-subnet --vpc-id ${vpcId} --availability-zone ${az} --cidr-block 10.0.0.0/28 --query 'Subnet.SubnetId' --output text --profile ${name})
 echo subnetId=${subnetId} >> ${dataDir}/${name}-envs.txt
-aws ec2 create-tags --resources ${internetGatewayId} --tags --tags Key=Name,Value=${name}-subnet --profile ${name}
+aws ec2 create-tags --resources ${subnetId} --tags --tags Key=Name,Value=${name}-subnet --profile ${name}
+${scriptsDir}/tag4billing.sh ${subnetId}
 
 routeTableId=$(aws ec2 create-route-table --vpc-id ${vpcId} --query 'RouteTable.RouteTableId' --output text --profile ${name})
 echo routeTableId=${routeTableId} >> ${dataDir}/${name}-envs.txt
 aws ec2 create-tags --resources ${routeTableId} --tags --tags Key=Name,Value=${name}-route-table --profile ${name}
+${scriptsDir}/tag4billing.sh ${routeTableId}
+
 routeTableAssoc=$(aws ec2 associate-route-table --route-table-id ${routeTableId} --subnet-id ${subnetId} --output text --profile ${name})
 echo routeTableAssoc=${routeTableAssoc} >> ${dataDir}/${name}-envs.txt
 aws ec2 create-route --route-table-id ${routeTableId} --destination-cidr-block 0.0.0.0/0 --gateway-id ${internetGatewayId} --profile ${name}
 
 securityGroupId=$(aws ec2 create-security-group --group-name ${name}-security-group --description "SG for ddahlem GPU machine" --vpc-id ${vpcId} --query 'GroupId' --output text --profile ${name})
 echo securityGroupId=${securityGroupId} >> ${dataDir}/${name}-envs.txt
+aws ec2 create-tags --resources ${securityGroupId} --tags --tags Key=Name,Value=${name}-security-group --profile ${name}
+${scriptsDir}/tag4billing.sh ${securityGroupId}
 
 # ssh
 aws ec2 authorize-security-group-ingress --group-id ${securityGroupId} --protocol tcp --port 22 --cidr ${cidr} --profile ${name}
 
 # jupyter notebook
 aws ec2 authorize-security-group-ingress --group-id ${securityGroupId} --protocol tcp --port 8888-8898 --cidr ${cidr} --profile ${name}
+
+# tensorboard
+aws ec2 authorize-security-group-ingress --group-id ${securityGroupId} --protocol tcp --port 6006 --cidr ${cidr} --profile ${name}
 
 if [ ! -d ~/.ssh ]
 then
@@ -232,7 +272,9 @@ aws ec2 wait spot-instance-request-fulfilled --profile ${name} --spot-instance-r
 instanceId=$(aws ec2 describe-spot-instance-requests --profile ${name} --output text --filter "Name=spot-instance-request-id,Values=${instanceReqId}" --query 'SpotInstanceRequests[0].InstanceId')
 echo instanceId=${instanceId} >> ${dataDir}/${name}-envs.txt
 
-aws ec2 create-tags --resources ${instanceId} --tags Key=Name,Value=${name}-gpu-machine --profile ${name}
+aws ec2 create-tags --resources ${instanceId} --tags Key=Name,Value=${name}-ec2-node --profile ${name}
+${scriptsDir}/tag4billing.sh ${instanceId}
+
 allocAddr=$(aws ec2 allocate-address --domain vpc --query 'AllocationId' --output text --profile ${name})
 echo allocAddr=${allocAddr} >> ${dataDir}/${name}-envs.txt
 
@@ -305,16 +347,13 @@ set -e
 sudo locale-gen en_IE.UTF-8
 sudo apt-get update
 sudo apt-get --assume-yes upgrade
-sudo apt-get --assume-yes install build-essential gcc-5 g++-5 make binutils cmake sox gcc-4.8 g++-4.8
-sudo apt-get --assume-yes install linux-source
-sudo apt-get --assume-yes install linux-headers-$(uname -r)
-sudo apt-get --assume-yes install libav-tools
+sudo apt-get --assume-yes install build-essential gcc-5 g++-5 make binutils cmake sox gcc-4.9 g++-4.9 gfortran-4.9 linux-source linux-headers-$(uname -r) libav-tools gfortran-4.9
 
 ## set the gcc version
-sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-4.8 10
+sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-4.9 10
 sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-5 20
 
-sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-4.8 10
+sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-4.9 10
 sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-5 20
 
 sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc 30
@@ -323,8 +362,8 @@ sudo update-alternatives --set cc /usr/bin/gcc
 sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++ 30
 sudo update-alternatives --set c++ /usr/bin/g++
 
-sudo update-alternatives --set gcc /usr/bin/gcc-5
-sudo update-alternatives --set g++ /usr/bin/g++-5
+sudo update-alternatives --set gcc /usr/bin/gcc-4.9
+sudo update-alternatives --set g++ /usr/bin/g++-4.9
 
 mkdir downloads
 cd downloads
@@ -336,7 +375,7 @@ wget http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1604/x86_64/$
 sudo dpkg -i ${CUDA_REPO_PKG}
 
 sudo apt-get update
-sudo apt-get install -y cuda libcupti-dev nvidia-cuda-dev
+sudo apt-get install -y cuda
 sudo modprobe nvidia
 nvidia-smi
 
@@ -349,9 +388,6 @@ read -p "Press [Enter] once you downloaded libcudnn into ~/downloads..."
 sudo dpkg -i libcudnn.deb
 
 sudo ldconfig
-
-sudo update-alternatives --set gcc /usr/bin/gcc-4.8
-sudo update-alternatives --set g++ /usr/bin/g++-4.8
 
 ## Anaconda installation
 wget "https://repo.continuum.io/archive/Anaconda2-4.3.0-Linux-x86_64.sh"
@@ -444,6 +480,9 @@ cd nccl
 make
 sudo make install
 
+sudo update-alternatives --set gcc /usr/bin/gcc-5
+sudo update-alternatives --set g++ /usr/bin/g++-5
+
 cd ~/githubs
 git clone https://github.com/Theano/libgpuarray.git
 cd libgpuarray
@@ -451,9 +490,15 @@ mkdir build; cd build
 cmake ..
 make
 sudo make install
+
+sudo update-alternatives --set gcc /usr/bin/gcc-4.8
+sudo update-alternatives --set g++ /usr/bin/g++-4.8
+
 cd ..
 python setup.py build
 python setup.py install --user
+echo "export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH" >> ~/.bashrc
+source ~/.bashrc
 
 sudo ldconfig
 
@@ -652,7 +697,7 @@ following script accepts three parameters:
  - I: the instance-id
  - D: the device name
 
-#+BEGIN_SRC sh :tangle scripts/add-volume.sh :var az=az :var name=name
+#+BEGIN_SRC sh :tangle scripts/new-volume.sh :var az=az :var name=name
 S=$1
 I=$2
 D=$3
@@ -680,22 +725,14 @@ Let's first check whether it has been attached.
 lsblk
 #+END_SRC
 
-Now, we can create a file system
+Now, we can create a file system and mount the device
 
-#+BEGIN_SRC sh
-sudo mkfs -t ext4 <device-name>
-#+END_SRC
-
-Create the mount point
-
-#+BEGIN_SRC sh
-sudo mkdir mount_point
-#+END_SRC
-
-And mount it
-
-#+BEGIN_SRC sh
-sudo mount device_name mount_point
+#+BEGIN_SRC sh :tangle scripts/mount.sh
+D=$1
+M=$2
+sudo mkfs -t ext4 ${D}
+sudo mkdir ${M}
+sudo mount ${D} ${M}
 #+END_SRC
 
 In order to persist this mount point we need to add it to /etc/fstab
@@ -724,12 +761,23 @@ azs=$(aws cloudhsm list-available-zones --output text --query 'AZList')
 for az in ${azs}; do
     echo ${az}
     aws ec2 describe-spot-price-history \
-        --instance-types p2.8xlarge \
+        --instance-types ${instanceType} \
         --availability-zone ${az} \
         --filters "Name=product-description,Values=Linux/UNIX" \
         --output json --query "SpotPriceHistory[*].SpotPrice" \
         |jq -r '.[]'\
-        |python -c "import sys, pandas as pd; df = pd.read_csv(sys.stdin, header=None, names=['price']); print(df.price.describe())"
+        |python -c "import sys, numpy as np, pandas as pd; df = pd.read_csv(sys.stdin, header=None, names=['price']); print(df.price.describe(np.arange(0,1,0.1)+0.1)))"
 done
+#+END_SRC
 
+#+BEGIN_SRC sh :tangle scripts/spot-price-timeseries.sh :var instanceType=instanceType
+az=$1
+echo ${az}
+aws ec2 describe-spot-price-history \
+    --instance-types ${instanceType} \
+    --availability-zone ${az} \
+    --filters "Name=product-description,Values=Linux/UNIX" \
+    --output text \
+    |tr "\t" ","|cut -d, -f5,6 \
+    |python -c "import sys, numpy as np, pandas as pd, matplotlib.pyplot as plt; df = pd.read_csv(sys.stdin, header=None, names=['price','t'], infer_datetime_format=True, parse_dates=['t']); ax = df.plot(x='t',y='price'); fig = ax.get_figure(); fig.savefig('az-timeseries.png');"
 #+END_SRC
