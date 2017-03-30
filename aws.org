@@ -379,13 +379,16 @@ sudo apt-get install -y cuda
 sudo modprobe nvidia
 nvidia-smi
 
-echo "export PATH=\"/usr/local/cuda/bin:\$PATH\"" >> ~/.bashrc
-echo "export CUDA_HOME=\"/usr/local/cuda/bin:\$PATH\"" >> ~/.bashrc
+echo "export PATH=/usr/local/cuda/bin:\$PATH" >> ~/.bashrc
+echo "export CUDA_HOME=/usr/local/cuda/bin:\$PATH" >> ~/.bashrc
+echo "export LD_LIBRARY_PATH=${CUDA_HOME}/lib64:$LD_LIBRARY_PATH" >> ~/.bashrc
 source ~/.bashrc
 
 ## install libcudnn
-read -p "Press [Enter] once you downloaded libcudnn into ~/downloads..."
-sudo dpkg -i libcudnn.deb
+read -p "Press [Enter] once you downloaded cudnn.tgz into ~/downloads..."
+tar xvzf cudnn.tgz
+sudo cp cuda/include/* /usr/local/cuda/include
+sudo cp cuda/lib64/libcudnn* /usr/local/cuda/lib64
 
 sudo ldconfig
 
@@ -420,7 +423,6 @@ while IFS= read -r env; do
     conda install -y bcolz
     conda install -y pytorch torchvision cuda80 -c soumith
     pip install theano
-    pip install lasagne
     pip install keras
     pip install hyperas
     pip install tensorflow-gpu
