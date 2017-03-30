@@ -134,7 +134,6 @@ aws ec2 create-tags --resources ${RESOURCE} --tags Key=BusinessUnit,Value=${bu} 
 aws ec2 create-tags --resources ${RESOURCE} --tags Key=Application,Value=${application} --profile ${name}
 aws ec2 create-tags --resources ${RESOURCE} --tags Key=Stack,Value=${stack} --profile ${name}
 aws ec2 create-tags --resources ${RESOURCE} --tags Key=Owner,Value=${owner} --profile ${name}
-
 #+END_SRC
 
 The following script just creates a JSON launch specification to
@@ -304,7 +303,7 @@ python ${scriptsDir}/cleanup.py ${dataDir}/${name}-envs.txt > ${scriptsDir}/clea
 
 chmod +x ${scriptsDir}/*.sh
 
-echo All done. Find all you need to connect in the ${name}-commands.txt file and to remove the stack call ${scriptsDir}/${name}-remove.sh
+echo All done. Find all you need to connect in the ${name}-commands.txt file
 echo Connect to your instance: ssh -i ~/.ssh/aws-key-${name}.pem ubuntu@${instanceUrl}
 #+END_SRC
 
@@ -699,7 +698,7 @@ following script accepts three parameters:
  - I: the instance-id
  - D: the device name
 
-#+BEGIN_SRC sh :tangle scripts/new-volume.sh :var az=az :var name=name
+#+BEGIN_SRC sh :tangle scripts/new-volume.sh :var az=az :var name=name :var scriptsDir=scriptsDir
 S=$1
 I=$2
 D=$3
@@ -711,6 +710,9 @@ volumeId=$(aws ec2 create-volume \
                --availability-zone ${az} \
                --query "VolumeId" \
                --output text)
+
+aws ec2 create-tags --resources ${volumeId} --tags Key=Name,Value=${name}-volume --profile ${name}
+${scriptsDir}/tag4billing.sh ${volumeId}
 
 aws ec2 attach-volume \
     --profile ${name} \
