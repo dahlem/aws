@@ -140,7 +140,7 @@ The following script just creates a JSON launch specification to
 create spot instances. Since we mostly use m4 or p2 instances, we can
 enable EBS optimisation without incurring an extra cost. Check the AWS
 documentation to make sure that no additional cost is added by
-enabling this feature.
+enabling this feature. Also, we enable detailed monitoring.
 
 #+BEGIN_SRC python :tangle scripts/spec.py
 import json, sys
@@ -161,6 +161,9 @@ print(json.dumps({
         }
     ],
     'EbsOptimized': True,
+    'Monitoring': {
+        'Enabled': True
+    }
 }, indent=4))
 #+END_SRC
 
