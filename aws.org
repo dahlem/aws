@@ -770,7 +770,7 @@ for az in ${azs}; do
         --filters "Name=product-description,Values=Linux/UNIX" \
         --output json --query "SpotPriceHistory[*].SpotPrice" \
         |jq -r '.[]'\
-        |python -c "import sys, numpy as np, pandas as pd; df = pd.read_csv(sys.stdin, header=None, names=['price']); print(df.price.describe(np.arange(0,1,0.1)+0.1)))"
+        |python -c "import sys, numpy as np, pandas as pd; df = pd.read_csv(sys.stdin, header=None, names=['price']); print(df.price.describe(np.arange(0,1,0.1)+0.1))"
 done
 #+END_SRC
 
