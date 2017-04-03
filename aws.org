@@ -325,23 +325,10 @@ libraries are build using gcc-5 and the user-level libraries that live
 within anaconda are build using gcc-4. For this reason we need to
 select the appropriate version during the setup script.
 
-The below table lists the two python environments to be created for
-Anaconda.
+The following script sets up the Ubuntu server including the cuda
+environment
 
-#+name: envs
-| py27 | 2.7 |
-| py35 | 3.5 |
-
-The following variable declares the main environment to use.
-
-#+name: mainEnv
- : py35
-
-The Jupyter setup facilitates choosing a kernel as in switching
-between the Anaconda environments. However, the Jupyter server runs
-off the main environment.
-
-#+BEGIN_SRC sh :tangle scripts/system-setup.sh :var envs=envs :var mainEnv=mainEnv
+#+BEGIN_SRC sh :tangle scripts/system-setup.sh
 set -x
 set -e
 
@@ -367,8 +354,8 @@ sudo update-alternatives --set c++ /usr/bin/g++
 sudo update-alternatives --set gcc /usr/bin/gcc-4.9
 sudo update-alternatives --set g++ /usr/bin/g++-4.9
 
-mkdir downloads
-cd downloads
+mkdir ~/downloads
+cd ~/downloads
 
 ## CUDA installation
 ## Access to CUDA packages
@@ -378,8 +365,6 @@ sudo dpkg -i ${CUDA_REPO_PKG}
 
 sudo apt-get update
 sudo apt-get install -y cuda
-sudo modprobe nvidia
-nvidia-smi
 
 echo "export PATH=/usr/local/cuda/bin:\$PATH" >> ~/.bashrc
 echo "export CUDA_HOME=/usr/local/cuda/bin:\$PATH" >> ~/.bashrc
@@ -392,7 +377,44 @@ tar xvzf cudnn.tgz
 sudo cp cuda/include/* /usr/local/cuda/include
 sudo cp cuda/lib64/libcudnn* /usr/local/cuda/lib64
 
-sudo ldconfig
+sudo reboot
+#+END_SRC
+
+The following script sets up a desired anaconda environment for a
+particular python version.
+
+#+BEGIN_SRC sh :tangle scripts/anaconda-env-setup.sh
+environment=$1
+pythonVersion=$2
+
+set -x
+set -e
+
+source ~/.bashrc
+
+conda create -y -n ${environment} python=${pythonVersion} anaconda
+source activate ${environment}
+conda upgrade -y --all
+conda install -y bcolz
+conda install -y pytorch torchvision cuda80 -c soumith
+pip install theano
+pip install keras
+pip install hyperas
+pip install tensorflow-gpu
+pip install environment_kernels
+source deactivate ${environment}
+#+END_SRC
+
+The Jupyter setup facilitates choosing a kernel as in switching
+between the Anaconda environments. However, the Jupyter server runs
+off the main environment.
+
+#+BEGIN_SRC sh :tangle scripts/anaconda-setup.sh :var scriptsDir=scriptsDir
+set -x
+set -e
+
+mkdir ~/downloads
+cd ~/downloads
 
 ## Anaconda installation
 wget "https://repo.continuum.io/archive/Anaconda2-4.3.0-Linux-x86_64.sh"
@@ -415,25 +437,10 @@ echo '{
     "backend": "theano"
 }' > ~/.keras/keras.json
 
-while IFS= read -r env; do
-    e=(${env})
-    environment=${e[0]}
-    pythonVersion=${e[1]}
-    conda create -y -n ${environment} python=${pythonVersion} anaconda
-    source activate ${environment}
-    conda upgrade -y --all
-    conda install -y bcolz
-    conda install -y pytorch torchvision cuda80 -c soumith
-    pip install theano
-    pip install keras
-    pip install hyperas
-    pip install tensorflow-gpu
-    pip install environment_kernels
-    source deactivate ${environment}
-done <<< "${envs}"
+${scriptsDir}/anaconda-env-setup.sh py35 3.5
 
 ## configure jupyter and prompt for password
-source activate ${mainEnv}
+source activate py35
 jupyter notebook --generate-config
 jupass=$(python -c "from notebook.auth import passwd; print(passwd())")
 echo "c.NotebookApp.password = u'"${jupass}"'" >> $HOME/.jupyter/jupyter_notebook_config.py
@@ -442,84 +449,102 @@ echo "c.NotebookApp.open_browser = False" >> $HOME/.jupyter/jupyter_notebook_con
 echo "c.NotebookApp.kernel_spec_manager_class = 'environment_kernels.EnvironmentKernelSpecManager'"  >> $HOME/.jupyter/jupyter_notebook_config.py
 #+END_SRC
 
-**** Baidu's Deepspeech setup
+According to the AWS documentation we can optimise the GPU settings as
+follows:
 
-The following script sets up the deepspeech environment.
-
-#+BEGIN_SRC sh :tangle scripts/deepspeech-system-setup.sh
-set -x
-set -e
-
-conda create -y -n deepspeech python=2.7 anaconda
-source activate deepspeech
-
-sudo update-alternatives --set gcc /usr/bin/gcc-4.8
-sudo update-alternatives --set g++ /usr/bin/g++-4.8
-
-## we only install this for python 2.7, because deepspeech is not supported on python 3.x
-mkdir githubs
-cd ~/githubs
-git clone https://github.com/SeanNaren/warp-ctc.git
-cd warp-ctc
-mkdir build; cd build
-cmake ..
-make
-
-## install the theano binding
-pip install soundfile
-cd ~/githubs
-git clone https://github.com/sherjilozair/ctc.git
-cd ctc
-mkdir build; cd build
-cmake ..
-make
-cd ../python
-python setup.py install --user
-
-## install ba-dl-deepspeech
-## multi-gpu setup
-cd ~/githubs/ 
-git clone https://github.com/NVIDIA/nccl.git
-cd nccl
-make
-sudo make install
-
-sudo update-alternatives --set gcc /usr/bin/gcc-5
-sudo update-alternatives --set g++ /usr/bin/g++-5
-
-cd ~/githubs
-git clone https://github.com/Theano/libgpuarray.git
-cd libgpuarray
-mkdir build; cd build
-cmake ..
-make
-sudo make install
-
-sudo update-alternatives --set gcc /usr/bin/gcc-4.8
-sudo update-alternatives --set g++ /usr/bin/g++-4.8
-
-cd ..
-python setup.py build
-python setup.py install --user
-echo "export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH" >> ~/.bashrc
-source ~/.bashrc
-
-sudo ldconfig
-
-pip install -r https://raw.githubusercontent.com/Lasagne/Lasagne/master/requirements.txt
-pip install https://github.com/Lasagne/Lasagne/archive/master.zip
-
-cd ~
-mkdir downloads
-cd downloads
-wget https://github.com/fchollet/keras/archive/1.1.0.tar.gz
-tar xzf 1.1.0.tar.gz
-cd keras-1.1.0
-python setup.py install --user
-
-cd ~/githubs/
-git clone https://github.com/baidu-research/ba-dls-deepspeech.git
+#+BEGIN_SRC sh :tangle scripts/gpu-settings.sh
+sudo nvidia-smi -pm 1
+sudo nvidia-smi --auto-boost-default=0
+sudo nvidia-smi -ac 2505,875
 #+END_SRC
+
+**** Deepspeech Torch setup
+This installation guide is taken from Torch, but for posterity we
+transcribe it here.
+
+Torch can be installed to your home folder in ~/torch by running these
+three commands:
+
+#+BEGIN_SRC sh :tangle scripts/torch.sh
+cd ~/
+git clone https://github.com/torch/distro.git ~/torch --recursive
+cd ~/torch; bash install-deps;
+./install.sh
+source ~/.bashrc
+luarocks install cutorch
+luarocks install cunn
+luarocks install cunnx
+#+END_SRC
+
+Optim: numeric optimization package for Torch:
+
+#+BEGIN_SRC sh :tangle scripts/torch.sh
+luarocks install optim
+#+END_SRC
+
+rnn: Recurrent Neural Network library for Torch7's nn:
+
+#+BEGIN_SRC sh :tangle scripts/torch.sh
+luarocks install rnn
+#+END_SRC
+
+lua---nnx: An extension to Torch7's nn package:
+
+#+BEGIN_SRC sh :tangle scripts/torch.sh
+luarocks install nnx
+#+END_SRC
+
+xlua: A set of useful extensions to Lua:
+
+#+BEGIN_SRC sh :tangle scripts/torch.sh
+luarocks install xlua
+#+END_SRC
+
+threads: Threads for Lua and LuaJIT:
+
+#+BEGIN_SRC sh :tangle scripts/torch.sh
+luarocks install threads
+#+END_SRC
+
+lua---parallel: A (simple) parallel computing framework for Lua:
+
+#+BEGIN_SRC sh :tangle scripts/torch.sh
+luarocks install parallel
+#+END_SRC
+
+nngraph: Graph Computation for nn:
+
+#+BEGIN_SRC sh :tangle scripts/torch.sh
+luarocks install nngraph
+#+END_SRC
+
+It is also suggested to update the following libraries:
+
+#+BEGIN_SRC sh :tangle scripts/torch.sh
+luarocks install nn
+luarocks install dpnn
+#+END_SRC
+
+LMDB: LMDB for Torch used for online training:
+
+#+BEGIN_SRC sh :tangle scripts/torch.sh
+sudo apt-get install -y libgflags-dev libgoogle-glog-dev liblmdb-dev
+#+END_SRC
+
+Audio Library for Torch: Audio Library for Torch:
+
+#+BEGIN_SRC sh :tangle scripts/deepspeech-torch.sh
+luarocks install http://raw.githubusercontent.com/baidu-research/warp-ctc/master/torch_binding/rocks/warp-ctc-scm-1.rockspec
+
+sudo apt-get install -y libfftw3-dev sox libsox-dev libsox-fmt-all
+luarocks install https://raw.githubusercontent.com/soumith/lua---audio/master/audio-0.1-0.rockspec
+luarocks install tds
+
+mkdir ~/projects
+cd ~/projects
+git clone https://github.com/SeanNaren/CTCSpeechRecognition.git
+#+END_SRC
+
 
 *** Test Deep Neural network libraries
 
@@ -555,36 +580,170 @@ Before doing anything data-specific we might wish to create a data
 volume, attach it and download all data and perform the computation on
 the mounted volume [[#sec:util-attach-vol]].
 
-**** Speech data for Deepspeech lib
-#+BEGIN_SRC sh :tangle scripts/deepspeech-data.sh
-set -x
+**** Download data
+Convert flac to wav files
+
+#+BEGIN_SRC sh :tangle scripts/flac2wav.sh
+flacfile=$1
+avconv -y -f flac -i $flacfile -ab 64k -ac 1 -ar 16000 -f wav "${flacfile%.*}.wav"
+#+END_SRC
+
+#+BEGIN_SRC sh :tangle scripts/sph2wav.sh
+sphfile=$1
+sox -q -t wav "${sphfile%.%}.wav" -c 1 -B -r 16000 -b 16 -t sph ${sphfile}
+#+END_SRC
+
+Download the LibriSpeech dataset, expand and convert to wav files.
+
+#+BEGIN_SRC sh :tangle scripts/librispeech-download.sh :var scriptsDir=scriptsDir
+base="http://www.openslr.org/resources/12/"
+for s in 'dev-clean' 'dev-other' 'test-clean' 'test-other' 'train-clean-100' 'train-clean-360' 'train-other-500'
+do
+    linkname="${base}/${s}.tar.gz"
+    echo $linkname
+    wget -c $linkname
+done
+
+for s in 'dev-clean' 'dev-other' 'test-clean' 'test-other' 'train-clean-100' 'train-clean-360' 'train-other-500'
+do
+    tar -xzvf $s.tar.gz
+done
+
+find . -type f -name "*.flac" |xargs -n 1 -P $(nproc) -I {} ${scriptsDir}/flac2wav.sh {}
+
+mkdir -p {dev,test,train}
+
+find dev-clean -name "*.wav" |xargs -n 1 -P $(nproc) -I {} cp {} dev/
+find dev-clean -name "*.txt" |xargs -n 1 -P $(nproc) -I {} cp {} dev/
+find dev-other -name "*.wav" |xargs -n 1 -P $(nproc) -I {} cp {} dev/
+find dev-other -name "*.txt" |xargs -n 1 -P $(nproc) -I {} cp {} dev/
+
+find test-clean -name "*.wav" |xargs -n 1 -P $(nproc) -I {} cp {} test/
+find test-clean -name "*.txt" |xargs -n 1 -P $(nproc) -I {} cp {} test/
+find test-other -name "*.wav" |xargs -n 1 -P $(nproc) -I {} cp {} other/
+find test-other -name "*.txt" |xargs -n 1 -P $(nproc) -I {} cp {} other/
+
+find train-clean-100 -name "*.wav" |xargs -n 1 -P $(nproc) -I {} cp {} train/
+find train-clean-100 -name "*.txt" |xargs -n 1 -P $(nproc) -I {} cp {} train/
+find train-clean-360 -name "*.wav" |xargs -n 1 -P $(nproc) -I {} cp {} train/
+find train-clean-360 -name "*.txt" |xargs -n 1 -P $(nproc) -I {} cp {} train/
+find train-other-500 -name "*.wav" |xargs -n 1 -P $(nproc) -I {} cp {} train/
+find train-other-500 -name "*.txt" |xargs -n 1 -P $(nproc) -I {} cp {} train/
+#+END_SRC
+
+Extract the transcriptions, because for every data source they are
+collated into a single file.
+
+#+BEGIN_SRC python :tangle scripts/libriTxt.py
+import argparse
+import os
+
+def main(txtFile):
+    for line in open(txtFile):
+        split = line.strip().split()
+        file_id = split[0]
+        label = ' '.join(split[1:]).lower()
+        output_file = file_id + '.txt'
+        with open(output_file, 'w') as out_file:
+            out_file.write(label)
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('txt_file', type=str,
+                        help='Path to overall transcription file')
+    args = parser.parse_args()
+    main(args.txt_file)
+#+END_SRC
+
+Execute this script in the man LibriSpeech folder.
+
+#+BEGIN_SRC sh :tangle scripts/libriTxt-trans.sh :var scriptsDir=scriptsDir
+cd dev
+find . -type f -name "*.trans.txt" | xargs -n 1 -P $(nproc) -I {} python ${scriptsDir}/libriTxt.py {}
+rm *.trans.txt
+cd ../test
+find . -type f -name "*.trans.txt" | xargs -n 1 -P $(nproc) -I {} python ${scriptsDir}/libriTxt.py {}
+rm *.trans.txt
+cd ../train
+find . -type f -name "*.trans.txt" | xargs -n 1 -P $(nproc) -I {} python ${scriptsDir}/libriTxt.py {}
+rm *.trans.txt
+#+END_SRC
+
+Download the TED-LIUM data.
+
+#+BEGIN_SRC sh :tangle scripts/tedlium-download.sh :var scriptsDir=scriptsDir
+wget http://www.openslr.org/resources/19/TEDLIUM_release2.tar.gz
+tar xzf TEDLIUM_release2.tar.gz
+find . -type f -name "*.sph" |xargs -n 1 -P $(nproc) -I {} ${scriptsDir}/sph2wav.sh {}
+#+END_SRC
+
+The following script up/down-tempos the wav files. It takes the following parameters
+./tempo. <F> <T> <T> <S>, where
+F: is the wav file
+T: is the tempo factor
+V: is a volume setting, e.g., 0.95
+S: is the string representing the tempo setting, e.g., for 1.3 it could be set to 13
+
+This script also expects a matching transcription file, which is copied.
+
+#+BEGIN_SRC sh :tangle scripts/tempo.sh
+F=$1
+T=$2
+V=$3
+S=$4
+
 set -e
+sox -v ${V} ${F} $(dirname ${F})/$(basename ${F} ".wav")_t${S}.wav tempo ${T}
+cp $(dirname ${F})/$(basename ${F} ".wav").txt $(dirname ${F})/$(basename ${F} ".wav")_t${S}.txt
+#+END_SRC
 
-source activate deepspeech
+The following script finds all wav files in the current directory and
+creates up/down tempo versions of it. Before starting with this we
+need to create an original file list, i.e., 
 
-sudo update-alternatives --set gcc /usr/bin/gcc-4.8
-sudo update-alternatives --set g++ /usr/bin/g++-4.8
+#+BEGIN_SRC sh :tangle scripts/orig-files.sh
+find . -type f -name "*.wav" > filelist
+#+END_SRC
 
-cd /data
-. ~/githubs/ba-dls-deepspeech/download.sh
-. ~/githubs/ba-dls-deepspeech/flac_to_wav.sh
+#+BEGIN_SRC sh :tangle scripts/up-down-tempo.sh :var scriptsDir=scriptsDir
+xargs -a filelist -n 1 -P $(nproc) -I {} ${scriptsDir}/tempo.sh {} 0.9 0.95 09
+xargs -a filelist -n 1 -P $(nproc) -I {} ${scriptsDir}/tempo.sh {} 1.1 0.95 11
+xargs -a filelist -n 1 -P $(nproc) -I {} ${scriptsDir}/tempo.sh {} 1.5 0.95 15
 #+END_SRC
 
 **** Training on Data
+We are using deepspeech.torch here to train on the data. We expect the
+data to be mounted on /data.
+
 #+BEGIN_SRC sh :tangle scripts/deepspeech-data-train.sh
 set -x
 set -e
 
-source activate deepspeech
+cd ~/projects/CTCSpeechRecognition/
+th MakeLMDB.lua -rootPath /data/data/big \
+   -lmdbPath /data/data/big_lmdb \
+   -windowSize 0.02 \
+   -stride 0.01 \
+   -sampleRate 16000 \
+   -audioExtension wav \
+   -processes $(nproc)
 
-sudo update-alternatives --set gcc /usr/bin/gcc-4.8
-sudo update-alternatives --set g++ /usr/bin/g++-4.8
-
-python create_desc_json.py data/LibriSpeech/dev-clean data/LibriSpeech/dev-clean-manifest.json
-python create_desc_json.py data/LibriSpeech/train-clean-100 data/LibriSpeech/train-clean-100-manifest.json
-
-## adjust the layers, learning rate, clip-norm in the train and model.py
-python train.py data/LibriSpeech/train-clean-100-manifest.json data/LibriSpeech/dev-clean-manifest.json data/LibriSpeech/train-100-model/
+th Train.lua -epochSave \
+   -learningRateAnnealing 1.1 \
+   -trainingSetLMDBPath /data/data/big_lmdb/train/ \
+   -validationSetLMDBPath /data/data/big_lmdb/dev/ \
+   -nGPU 8 \
+   -logsTrainPath /data/logs/deepspeech-big/TrainingLoss/ \
+   -logsValidationPath /data/logs/deepspeech-big/ValidationScores/ \
+   -modelTrainingPath /data/models/deepspeech-big/ \
+   -epochs 500 \
+   -learningRate 0.01 \
+   -maxNorm 20 \
+   -momentum 0.9 \
+   -batchSize 32 \
+   -validationBatchSize 32 \
+   -permuteBatch
 #+END_SRC
 
 ** Screen
