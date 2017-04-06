@@ -57,10 +57,11 @@ environment and then install the desired software in order to create
 an AMI image first. In subsequent steps, we can use our AMI image
 directly.
 
-** P2 instance
-The P2 instances on AWS are dedicated GPU computing resources. They
-come in various sizes, and we might only need a single instance to
-conduct the work.
+** EC2 instance
+We are mostly interested in P2 instances, because they are dedicated
+GPU computing resources. They come in various sizes, and we might only
+need a single instance to conduct the work. However, the following
+scripts can be used for any EC2 instance types of course.
 
 *** Configuration
 Most of the EC2 environment configuration is taken from Jeremy
@@ -469,7 +470,7 @@ three commands:
 cd ~/
 git clone https://github.com/torch/distro.git ~/torch --recursive
 cd ~/torch; bash install-deps;
-./install.sh
+./install.sh -b
 source ~/.bashrc
 luarocks install cutorch
 luarocks install cunn
@@ -528,6 +529,17 @@ luarocks install dpnn
 LMDB: LMDB for Torch used for online training:
 
 #+BEGIN_SRC sh :tangle scripts/torch.sh
+mkdir ~/githubs
+cd ~/githubs
+git clone https://github.com/LMDB/lmdb
+cd lmdb/libraries/liblmdb/
+make
+sudo make install
+
+cd ~/githubs
+git clone https://github.com/eladhoffer/lmdb.torch
+cd lmdb.torch
+luarocks make
 sudo apt-get install -y libgflags-dev libgoogle-glog-dev liblmdb-dev
 #+END_SRC
 
@@ -544,7 +556,6 @@ mkdir ~/projects
 cd ~/projects
 git clone https://github.com/SeanNaren/CTCSpeechRecognition.git
 #+END_SRC
-
 
 *** Test Deep Neural network libraries
 
@@ -946,4 +957,112 @@ aws ec2 describe-spot-price-history \
     --output text \
     |tr "\t" ","|cut -d, -f5,6 \
     |python -c "import sys, numpy as np, pandas as pd, matplotlib.pyplot as plt; df = pd.read_csv(sys.stdin, header=None, names=['price','t'], infer_datetime_format=True, parse_dates=['t']); ax = df.plot(x='t',y='price'); fig = ax.get_figure(); fig.savefig('az-timeseries.png');"
+#+END_SRC
+
+#+BEGIN_SRC python :tangle scripts/spot-price.py
+import argparse
+
+import numpy as np
+import pandas as pd
+
+
+def clean(priceHistory):
+    df = pd.read_csv(
+        priceHistory,
+        header=None,
+        names=['price','t'],
+        infer_datetime_format=True,
+        parse_dates=['t'])
+    df.t = df.t.map(lambda t: t.strftime('%Y-%m-%d %H:%M'))
+    df = df.groupby(['t'], sort=True, as_index=True)['price'].max()
+    df.index = pd.to_datetime(df.index)
+    idx = pd.date_range(df.index.min(), df.index.max(), freq='Min', name='t')
+    df = df.reindex(idx, method='ffill').reset_index()
+    return(df)
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('priceHistory', type=str,
+                        help='Path to price history file')
+    parser.add_argument('az', type=str,
+                        help='The AWS availability zone')
+    args = parser.parse_args()
+    df = clean(args.priceHistory)
+    df.pricePerMinute = df.price/60.0
+    hours = np.array([1, 2, 4, 8, 24, 48, 72, 168, 336, 672])
+
+    print('az,hours,price,avgPricePerHour')
+    for h in hours:
+        price = df.pricePerMinute[-h*60:].sum()
+        print('{3:s},{0:f},{1:f},{2:f}'.format(h, price, price/h, args.az))
+#+END_SRC
+
+We would like to iterate over specified regions and their availability
+zones to compute a summary of spot prices assuming an EC2 instance was
+running.
+
+The following script takes as an input a region and computes prices
+over all availability zones within it.
+
+#+BEGIN_SRC sh :tangle scripts/spot-price-comparison.sh :var scriptsDir=scriptsDir :var dataDir=dataDir :var instanceType=instanceType
+region=$1
+azs=$(aws --region ${region} cloudhsm list-available-zones --output text --query 'AZList')
+
+mkdir -p ${dataDir}/spot-prices
+
+for az in ${azs}; do
+    echo ${az}
+    aws --region ${region} ec2 describe-spot-price-history \
+        --instance-types ${instanceType} \
+        --availability-zone ${az} \
+        --filters "Name=product-description,Values=Linux/UNIX" \
+        --output text \
+        |tr "\t" ","|\
+        cut -d, -f6,5 \
+            > ${dataDir}/spot-prices/${instanceType}-spot-price-history-${az}.csv
+
+    python ${scriptsDir}/spot-price.py ${dataDir}/spot-prices/${instanceType}-spot-price-history-${az}.csv ${az} > ${dataDir}/spot-prices/${instanceType}-spot-price-history-${az}-summary.csv
+done
+rm ${dataDir}/spot-prices/${instanceType}-spot-price-history-${region}-summary.csv
+cat ${dataDir}/spot-prices/${instanceType}-spot-price-history-${region}*-summary.csv \
+    | awk -F, '{if (NR==1) {print $0} else {if ($1 != "az") {print $0}}}' \
+          > ${dataDir}/spot-prices/${instanceType}-spot-price-history-${region}-summary.csv
+#+END_SRC
+
+The following script can be used to visualise the spot price summary,
+which is implemented in R using ggplot2.
+
+#+BEGIN_SRC R :tangle scripts/plot-spot-price-summary.R
+require(ggplot2)
+require(gridExtra)
+
+args <- commandArgs(trailingOnly = TRUE)
+
+df <- read.csv(args[1], header=T)
+
+p1 <- ggplot(df, aes(x=hours, y=price)) + geom_line(aes(color=az)) + theme_bw() + theme(legend.position="bottom")
+p2 <- ggplot(df, aes(x=hours, y=avgPricePerHour)) + geom_line(aes(color=az)) + theme_bw()
+
+#extract legend
+#https://github.com/hadley/ggplot2/wiki/Share-a-legend-between-two-ggplot2-graphs
+g_legend <- function(a.gplot) {
+    tmp <- ggplot_gtable(ggplot_build(a.gplot))
+    leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+    legend <- tmp$grobs[[leg]]
+    return(legend)
+}
+
+pdf(args[2], onefile=F)
+mylegend <- g_legend(p1)
+p3 <- grid.arrange(
+    arrangeGrob(p1 + theme(legend.position="none"),
+                p2 + theme(legend.position="none"),
+                nrow=1),
+    mylegend, nrow=2, heights=c(10, 1))
+dev.off()
+#+END_SRC
+
+#+BEGIN_SRC sh :tangle scripts/plot-spot-price-summary.sh :var scriptsDir=scriptsDir :var dataDir=dataDir :var instanceType=instanceType
+region=$1
+Rscript ${scriptsDir}/plot-spot-price-summary.R ${dataDir}/spot-prices/${instanceType}-spot-price-history-${region}-summary.csv ${dataDir}/spot-prices/${instanceType}-spot-price-history-${region}-summary.pdf
 #+END_SRC
