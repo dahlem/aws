@@ -128,13 +128,13 @@ The following variables are used for tagging the resources for billing purposes.
 #+name: owner
  : ddahlem
 
-#+BEGIN_SRC sh :tangle scripts/tag4billing.sh :var bu=bu :var application=application :var stack=stack :var owner=owner :var name=name
+#+BEGIN_SRC sh :tangle scripts/tag4billing.sh :var bu=bu :var application=application :var stack=stack :var owner=owner :var name=name :var region=region
 RESOURCE=$1
 
-aws ec2 create-tags --resources ${RESOURCE} --tags Key=BusinessUnit,Value=${bu} --profile ${name}
-aws ec2 create-tags --resources ${RESOURCE} --tags Key=Application,Value=${application} --profile ${name}
-aws ec2 create-tags --resources ${RESOURCE} --tags Key=Stack,Value=${stack} --profile ${name}
-aws ec2 create-tags --resources ${RESOURCE} --tags Key=Owner,Value=${owner} --profile ${name}
+aws --region ${region} ec2 create-tags --resources ${RESOURCE} --tags Key=BusinessUnit,Value=${bu} --profile ${name}
+aws --region ${region} ec2 create-tags --resources ${RESOURCE} --tags Key=Application,Value=${application} --profile ${name}
+aws --region ${region} ec2 create-tags --resources ${RESOURCE} --tags Key=Stack,Value=${stack} --profile ${name}
+aws --region ${region} ec2 create-tags --resources ${RESOURCE} --tags Key=Owner,Value=${owner} --profile ${name}
 #+END_SRC
 
 The following script just creates a JSON launch specification to
@@ -171,8 +171,9 @@ print(json.dumps({
 #+BEGIN_SRC python :tangle scripts/cleanup.py
 import csv, sys
 
-if len(sys.argv) == 2:
+if len(sys.argv) == 3:
     envsFile = csv.reader(open(sys.argv[1], 'r'), delimiter='=')
+    region = sys.argv[2]
 
     envsDict = {}
     for e in envsFile:
@@ -180,80 +181,80 @@ if len(sys.argv) == 2:
 
     print('set -x')
     if 'assocId' in envsDict:
-        print('aws ec2 disassociate-address --profile {0:s} --association-id {1:s}'.format(envsDict['name'], envsDict['assocId']))
+        print('aws --region {2:s} ec2 disassociate-address --profile {0:s} --association-id {1:s}'.format(envsDict['name'], envsDict['assocId'], region))
     if 'allocAddr' in envsDict:
-        print('aws ec2 release-address --profile {0:s} --allocation-id {1:s}'.format(envsDict['name'], envsDict['allocAddr']))
+        print('aws --region {2:s} ec2 release-address --profile {0:s} --allocation-id {1:s}'.format(envsDict['name'], envsDict['allocAddr'], region))
     if 'instanceId' in envsDict:
-        print('aws ec2 terminate-instances --profile {0:s} --instance-ids {1:s}'.format(envsDict['name'], envsDict['instanceId']))
-        print('aws ec2 wait instance-terminated --profile {0:s} --instance-ids {1:s}'.format(envsDict['name'], envsDict['instanceId']))
+        print('aws --region {2:s} ec2 terminate-instances --profile {0:s} --instance-ids {1:s}'.format(envsDict['name'], envsDict['instanceId'], region))
+        print('aws --region {2:s} ec2 wait instance-terminated --profile {0:s} --instance-ids {1:s}'.format(envsDict['name'], envsDict['instanceId'], region))
     if 'securityGroupId' in envsDict:
-        print('aws ec2 delete-security-group --profile {0:s} --group-id {1:s}'.format(envsDict['name'], envsDict['securityGroupId']))
+        print('aws --region {2:s} ec2 delete-security-group --profile {0:s} --group-id {1:s}'.format(envsDict['name'], envsDict['securityGroupId'], region))
     if 'routeTableAssoc' in envsDict:
-        print('aws ec2 disassociate-route-table --profile {0:s} --association-id {1:s}'.format(envsDict['name'], envsDict['routeTableAssoc']))
+        print('aws --region {2:s} ec2 disassociate-route-table --profile {0:s} --association-id {1:s}'.format(envsDict['name'], envsDict['routeTableAssoc'], region))
     if 'routeTableId' in envsDict:
-        print('aws ec2 delete-route-table --profile {0:s} --route-table-id {1:s}'.format(envsDict['name'], envsDict['routeTableId']))
+        print('aws --region {2:s} ec2 delete-route-table --profile {0:s} --route-table-id {1:s}'.format(envsDict['name'], envsDict['routeTableId'], region))
     if 'internetGatewayId' in envsDict and 'vpcId' in envsDict:
-        print('aws ec2 detach-internet-gateway --profile {0:s} --internet-gateway-id {1:s} --vpc-id {2:s}'.format(envsDict['name'], envsDict['internetGatewayId'], envsDict['vpcId']))
-        print('aws ec2 delete-internet-gateway --profile {0:s} --internet-gateway-id {1:s}'.format(envsDict['name'], envsDict['internetGatewayId']))
+        print('aws --region {3:s} ec2 detach-internet-gateway --profile {0:s} --internet-gateway-id {1:s} --vpc-id {2:s}'.format(envsDict['name'], envsDict['internetGatewayId'], envsDict['vpcId'], region))
+        print('aws --region {2:s} ec2 delete-internet-gateway --profile {0:s} --internet-gateway-id {1:s}'.format(envsDict['name'], envsDict['internetGatewayId'], region))
     if 'subnetId' in envsDict:
-        print('aws ec2 delete-subnet --profile {0:s} --subnet-id {1:s}'.format(envsDict['name'], envsDict['subnetId']))
+        print('aws --region {2:s} ec2 delete-subnet --profile {0:s} --subnet-id {1:s}'.format(envsDict['name'], envsDict['subnetId'], region))
     if 'vpcId' in envsDict:
-        print('aws ec2 delete-vpc --profile {0:s} --vpc-id {1:s}'.format(envsDict['name'], envsDict['vpcId']))
+        print('aws --region {2:s} ec2 delete-vpc --profile {0:s} --vpc-id {1:s}'.format(envsDict['name'], envsDict['vpcId'], region))
 #+END_SRC
 
 The following script is mainly taken from Jeremy Howard with some
 modifications to launch spot instances and to differentiate between
 AWS profiles.
 
-#+BEGIN_SRC sh :tangle scripts/setup.sh :var instanceType=instanceType :var ami=ami :var name=name :var cidr=cidr :var scriptsDir=scriptsDir :var dataDir=dataDir :var maxPrice=maxPrice :var az=az
+#+BEGIN_SRC sh :tangle scripts/setup.sh :var instanceType=instanceType :var ami=ami :var name=name :var cidr=cidr :var scriptsDir=scriptsDir :var dataDir=dataDir :var maxPrice=maxPrice :var az=az :var region=region
 set -x ## print the commands
 set -e ## fail script if one command returns zero
 
 echo name=${name} > ${dataDir}/${name}-envs.txt
 echo instanceType=${instanceType} >> ${dataDir}/${name}-envs.txt
 
-vpcId=$(aws ec2 create-vpc --cidr-block 10.0.0.0/28 --query 'Vpc.VpcId' --output text --profile ${name})
+vpcId=$(aws --region ${region} ec2 create-vpc --cidr-block 10.0.0.0/28 --query 'Vpc.VpcId' --output text --profile ${name})
 echo vpcId=${vpcId} >> ${dataDir}/${name}-envs.txt
-aws ec2 create-tags --resources ${vpcId} --tags Key=Name,Value=${name} --profile ${name}
+aws --region ${region} ec2 create-tags --resources ${vpcId} --tags Key=Name,Value=${name} --profile ${name}
 ${scriptsDir}/tag4billing.sh ${vpcId}
 
-aws ec2 modify-vpc-attribute --vpc-id ${vpcId} --enable-dns-support "{\"Value\":true}" --profile ${name}
-aws ec2 modify-vpc-attribute --vpc-id ${vpcId} --enable-dns-hostnames "{\"Value\":true}" --profile ${name}
+aws --region ${region} ec2 modify-vpc-attribute --vpc-id ${vpcId} --enable-dns-support "{\"Value\":true}" --profile ${name}
+aws --region ${region} ec2 modify-vpc-attribute --vpc-id ${vpcId} --enable-dns-hostnames "{\"Value\":true}" --profile ${name}
 
-internetGatewayId=$(aws ec2 create-internet-gateway --query 'InternetGateway.InternetGatewayId' --output text --profile ${name})
+internetGatewayId=$(aws --region ${region} ec2 create-internet-gateway --query 'InternetGateway.InternetGatewayId' --output text --profile ${name})
 echo internetGatewayId=${internetGatewayId} >> ${dataDir}/${name}-envs.txt
-aws ec2 create-tags --resources ${internetGatewayId} --tags --tags Key=Name,Value=${name}-gateway --profile ${name}
+aws --region ${region} ec2 create-tags --resources ${internetGatewayId} --tags --tags Key=Name,Value=${name}-gateway --profile ${name}
 ${scriptsDir}/tag4billing.sh ${internetGatewayId}
 
-aws ec2 attach-internet-gateway --internet-gateway-id ${internetGatewayId} --vpc-id ${vpcId} --profile ${name}
+aws --region ${region} ec2 attach-internet-gateway --internet-gateway-id ${internetGatewayId} --vpc-id ${vpcId} --profile ${name}
 
-subnetId=$(aws ec2 create-subnet --vpc-id ${vpcId} --availability-zone ${az} --cidr-block 10.0.0.0/28 --query 'Subnet.SubnetId' --output text --profile ${name})
+subnetId=$(aws --region ${region} ec2 create-subnet --vpc-id ${vpcId} --availability-zone ${az} --cidr-block 10.0.0.0/28 --query 'Subnet.SubnetId' --output text --profile ${name})
 echo subnetId=${subnetId} >> ${dataDir}/${name}-envs.txt
-aws ec2 create-tags --resources ${subnetId} --tags --tags Key=Name,Value=${name}-subnet --profile ${name}
+aws --region ${region} ec2 create-tags --resources ${subnetId} --tags --tags Key=Name,Value=${name}-subnet --profile ${name}
 ${scriptsDir}/tag4billing.sh ${subnetId}
 
-routeTableId=$(aws ec2 create-route-table --vpc-id ${vpcId} --query 'RouteTable.RouteTableId' --output text --profile ${name})
+routeTableId=$(aws --region ${region} ec2 create-route-table --vpc-id ${vpcId} --query 'RouteTable.RouteTableId' --output text --profile ${name})
 echo routeTableId=${routeTableId} >> ${dataDir}/${name}-envs.txt
-aws ec2 create-tags --resources ${routeTableId} --tags --tags Key=Name,Value=${name}-route-table --profile ${name}
+aws --region ${region} ec2 create-tags --resources ${routeTableId} --tags --tags Key=Name,Value=${name}-route-table --profile ${name}
 ${scriptsDir}/tag4billing.sh ${routeTableId}
 
-routeTableAssoc=$(aws ec2 associate-route-table --route-table-id ${routeTableId} --subnet-id ${subnetId} --output text --profile ${name})
+routeTableAssoc=$(aws --region ${region} ec2 associate-route-table --route-table-id ${routeTableId} --subnet-id ${subnetId} --output text --profile ${name})
 echo routeTableAssoc=${routeTableAssoc} >> ${dataDir}/${name}-envs.txt
-aws ec2 create-route --route-table-id ${routeTableId} --destination-cidr-block 0.0.0.0/0 --gateway-id ${internetGatewayId} --profile ${name}
+aws --region ${region} ec2 create-route --route-table-id ${routeTableId} --destination-cidr-block 0.0.0.0/0 --gateway-id ${internetGatewayId} --profile ${name}
 
-securityGroupId=$(aws ec2 create-security-group --group-name ${name}-security-group --description "SG for ddahlem GPU machine" --vpc-id ${vpcId} --query 'GroupId' --output text --profile ${name})
+securityGroupId=$(aws --region ${region} ec2 create-security-group --group-name ${name}-security-group --description "SG for ddahlem GPU machine" --vpc-id ${vpcId} --query 'GroupId' --output text --profile ${name})
 echo securityGroupId=${securityGroupId} >> ${dataDir}/${name}-envs.txt
-aws ec2 create-tags --resources ${securityGroupId} --tags --tags Key=Name,Value=${name}-security-group --profile ${name}
+aws --region ${region} ec2 create-tags --resources ${securityGroupId} --tags --tags Key=Name,Value=${name}-security-group --profile ${name}
 ${scriptsDir}/tag4billing.sh ${securityGroupId}
 
 # ssh
-aws ec2 authorize-security-group-ingress --group-id ${securityGroupId} --protocol tcp --port 22 --cidr ${cidr} --profile ${name}
+aws --region ${region} ec2 authorize-security-group-ingress --group-id ${securityGroupId} --protocol tcp --port 22 --cidr ${cidr} --profile ${name}
 
 # jupyter notebook
-aws ec2 authorize-security-group-ingress --group-id ${securityGroupId} --protocol tcp --port 8888-8898 --cidr ${cidr} --profile ${name}
+aws --region ${region} ec2 authorize-security-group-ingress --group-id ${securityGroupId} --protocol tcp --port 8888-8898 --cidr ${cidr} --profile ${name}
 
 # tensorboard
-aws ec2 authorize-security-group-ingress --group-id ${securityGroupId} --protocol tcp --port 6006 --cidr ${cidr} --profile ${name}
+aws --region ${region} ec2 authorize-security-group-ingress --group-id ${securityGroupId} --protocol tcp --port 6006 --cidr ${cidr} --profile ${name}
 
 if [ ! -d ~/.ssh ]
 then
@@ -262,48 +263,48 @@ fi
 
 if [ ! -f ~/.ssh/aws-key-${name}.pem ]
 then
-    aws ec2 create-key-pair --key-name aws-key-${name} --query 'KeyMaterial' --output text --profile ${name} > ~/.ssh/aws-key-${name}.pem
+    aws --region ${region} ec2 create-key-pair --key-name aws-key-${name} --query 'KeyMaterial' --output text --profile ${name} > ~/.ssh/aws-key-${name}.pem
     chmod 400 ~/.ssh/aws-key-${name}.pem
 fi
 
 python ${scriptsDir}/spec.py ${ami} aws-key-${name} "${securityGroupId}" ${instanceType} ${subnetId} > ${dataDir}/launch-spec.json
-instanceReqId=$(aws ec2 request-spot-instances --spot-price ${maxPrice} --availability-zone-group ${az} --instance-count 1 --type "one-time" --launch-specification file://${dataDir}/launch-spec.json --query 'SpotInstanceRequests[0].SpotInstanceRequestId' --output text --profile ${name})
+instanceReqId=$(aws --region ${region} ec2 request-spot-instances --spot-price ${maxPrice} --availability-zone-group ${az} --instance-count 1 --type "one-time" --launch-specification file://${dataDir}/launch-spec.json --query 'SpotInstanceRequests[0].SpotInstanceRequestId' --output text --profile ${name})
 echo instanceReqId=${instanceReqId} >> ${dataDir}/${name}-envs.txt
 
 echo Waiting for instance start...
-aws ec2 wait spot-instance-request-fulfilled --profile ${name} --spot-instance-request-ids ${instanceReqId}
-instanceId=$(aws ec2 describe-spot-instance-requests --profile ${name} --output text --filter "Name=spot-instance-request-id,Values=${instanceReqId}" --query 'SpotInstanceRequests[0].InstanceId')
+aws --region ${region} ec2 wait spot-instance-request-fulfilled --profile ${name} --spot-instance-request-ids ${instanceReqId}
+instanceId=$(aws --region ${region} ec2 describe-spot-instance-requests --profile ${name} --output text --filter "Name=spot-instance-request-id,Values=${instanceReqId}" --query 'SpotInstanceRequests[0].InstanceId')
 echo instanceId=${instanceId} >> ${dataDir}/${name}-envs.txt
 
-aws ec2 create-tags --resources ${instanceId} --tags Key=Name,Value=${name}-ec2-node --profile ${name}
+aws --region ${region} ec2 create-tags --resources ${instanceId} --tags Key=Name,Value=${name}-ec2-node --profile ${name}
 ${scriptsDir}/tag4billing.sh ${instanceId}
 
-allocAddr=$(aws ec2 allocate-address --domain vpc --query 'AllocationId' --output text --profile ${name})
+allocAddr=$(aws --region ${region} ec2 allocate-address --domain vpc --query 'AllocationId' --output text --profile ${name})
 echo allocAddr=${allocAddr} >> ${dataDir}/${name}-envs.txt
 
-aws ec2 wait instance-running --instance-ids ${instanceId} --profile ${name}
+aws --region ${region} ec2 wait instance-running --instance-ids ${instanceId} --profile ${name}
 sleep 10 # wait for ssh service to start running too
-assocId=$(aws ec2 associate-address --instance-id ${instanceId} --allocation-id ${allocAddr} --query 'AssociationId' --output text --profile ${name})
+assocId=$(aws --region ${region} ec2 associate-address --instance-id ${instanceId} --allocation-id ${allocAddr} --query 'AssociationId' --output text --profile ${name})
 echo assocId=${assocId} >> ${dataDir}/${name}-envs.txt
-instanceUrl=$(aws ec2 describe-instances --instance-ids ${instanceId} --query 'Reservations[0].Instances[0].PublicDnsName' --output text --profile ${name})
+instanceUrl=$(aws --region ${region} ec2 describe-instances --instance-ids ${instanceId} --query 'Reservations[0].Instances[0].PublicDnsName' --output text --profile ${name})
 echo instanceUrl=${instanceUrl} >> ${dataDir}/${name}-envs.txt
 
 # save commands to file
 echo \# Connect to your instance: > ${dataDir}/${name}-commands.txt
 echo ssh -i ~/.ssh/aws-key-${name}.pem ubuntu@${instanceUrl} >> ${dataDir}/${name}-commands.txt
 echo \# Stop your instance: : >> ${dataDir}/${name}-commands.txt
-echo aws ec2 stop-instances --instance-ids ${instanceId} --profile ${name} >> ${dataDir}/${name}-commands.txt
+echo aws --region ${region} ec2 stop-instances --instance-ids ${instanceId} --profile ${name} >> ${dataDir}/${name}-commands.txt
 echo \# Start your instance: >> ${dataDir}/${name}-commands.txt
-echo aws ec2 start-instances --instance-ids ${instanceId} --profile ${name} >> ${dataDir}/${name}-commands.txt
+echo aws --region ${region} ec2 start-instances --instance-ids ${instanceId} --profile ${name} >> ${dataDir}/${name}-commands.txt
 echo \# Reboot your instance: >> ${dataDir}/${name}-commands.txt
-echo aws ec2 reboot-instances --instance-ids ${instanceId} --profile ${name} >> ${dataDir}/${name}-commands.txt
+echo aws --region ${region} ec2 reboot-instances --instance-ids ${instanceId} --profile ${name} >> ${dataDir}/${name}-commands.txt
 echo ""
 
 # create image
-echo aws ec2 create-image --instance-id ${instanceId} --name "Deep Learning Server" --description "An AMI for Deep Learning on NVIDIA GPUs" --block-device-mappings "[{\"DeviceName\": \"/dev/sda1\",\"Ebs\":{\"VolumeSize\":128, \"VolumeType\": \"gp2\"}}]" --profile ${name} > ${scriptsDir}/${name}-create-image.sh
+echo aws --region ${region} ec2 create-image --instance-id ${instanceId} --name "Deep Learning Server" --description "An AMI for Deep Learning on NVIDIA GPUs" --block-device-mappings "[{\"DeviceName\": \"/dev/sda1\",\"Ebs\":{\"VolumeSize\":128, \"VolumeType\": \"gp2\"}}]" --profile ${name} > ${scriptsDir}/${name}-create-image.sh
 
 # create cleanup script
-python ${scriptsDir}/cleanup.py ${dataDir}/${name}-envs.txt > ${scriptsDir}/cleanup.sh
+python ${scriptsDir}/cleanup.py ${dataDir}/${name}-envs.txt ${region} > ${scriptsDir}/cleanup.sh
 
 chmod +x ${scriptsDir}/*.sh
 
@@ -802,48 +803,48 @@ bind F eval "hardstatus alwayslastline"
 
 ** Cleanup
 *** Address-space
-#+BEGIN_SRC sh :tangle scripts/cleanup-addresses.sh :var name=name
-assocIds=$(aws ec2 describe-addresses --profile ${name} --output text --query "Addresses[*].AssociationId")
+#+BEGIN_SRC sh :tangle scripts/cleanup-addresses.sh :var name=name :var region=region
+assocIds=$(aws --region ${region} ec2 describe-addresses --profile ${name} --output text --query "Addresses[*].AssociationId")
 for a in assocIds; do
-    aws ec2 disassociate-address --association-id ${a} --profile ${name}
-    aws ec2 release-address --allocation-id ${a} --profile ${name}
+    aws --region ${region} ec2 disassociate-address --association-id ${a} --profile ${name}
+    aws --region ${region} ec2 release-address --allocation-id ${a} --profile ${name}
 done
 #+END_SRC
 
 *** Instances
-#+BEGIN_SRC sh :tangle scripts/cleanup-instances.sh :var name=name
-instances=$(aws ec2 describe-instances --profile ${name} --output text --query "Reservations[*].Instances[*].InstanceId")
+#+BEGIN_SRC sh :tangle scripts/cleanup-instances.sh :var name=name :var region=region
+instances=$(aws --region ${region} ec2 describe-instances --profile ${name} --output text --query "Reservations[*].Instances[*].InstanceId")
 for i in instances; do
-    aws ec2 terminate-instances --instance-ids ${i} --profile ${name}
-    aws ec2 wait instance-terminated --instance-ids ${i} --profile ${name}
+    aws --region ${region} ec2 terminate-instances --instance-ids ${i} --profile ${name}
+    aws --region ${region} ec2 wait instance-terminated --instance-ids ${i} --profile ${name}
 done
 #+END_SRC
 
 *** Security groups
-#+BEGIN_SRC sh :tangle scripts/cleanup-security-group.sh :var name=name
-groups=$(aws ec2 describe-security-groups --profile ${name} --output text --filter "Name=group-name,Values=${name}-security-group" --query "SecurityGroups[*].GroupId")
+#+BEGIN_SRC sh :tangle scripts/cleanup-security-group.sh :var name=name :var region=region
+groups=$(aws --region ${region} ec2 describe-security-groups --profile ${name} --output text --filter "Name=group-name,Values=${name}-security-group" --query "SecurityGroups[*].GroupId")
 for g in groups; do
-    aws ec2 delete-security-group --group-id ${s} --profile ${name}
+    aws --region ${region} ec2 delete-security-group --group-id ${s} --profile ${name}
 done
 #+END_SRC
 
 *** Route Tables
-#+BEGIN_SRC sh :tangle scripts/cleanup-route-tables.sh :var name=name
-associations=$(aws ec2 describe-route-tables --profile ${name} --output text --filter "Name=association.main,Values=false" --query "RouteTables[*].Associations[*].RouteTableAssociationsId")
+#+BEGIN_SRC sh :tangle scripts/cleanup-route-tables.sh :var name=name :var region=region
+associations=$(aws --region ${region} ec2 describe-route-tables --profile ${name} --output text --filter "Name=association.main,Values=false" --query "RouteTables[*].Associations[*].RouteTableAssociationsId")
 for a in associations; do
-    aws ec2 disassociate-route-table --association-id ${a} --profile ${name}
+    aws --region ${region} ec2 disassociate-route-table --association-id ${a} --profile ${name}
 done
 
-tables=$(aws ec2 describe-route-tables --profile ${name} --output text --filter "Name=association.main,Values=false" --query "RouteTables[*].RouteTableId")
+tables=$(aws --region ${region} ec2 describe-route-tables --profile ${name} --output text --filter "Name=association.main,Values=false" --query "RouteTables[*].RouteTableId")
 for t in tables; do
-    aws ec2 delete-route-table --route-table-id ${t} --profile ${name}
+    aws --region ${region} ec2 delete-route-table --route-table-id ${t} --profile ${name}
 done
 #+END_SRC
 
 *** Internet Gateways
-#+BEGIN_SRC sh :tangle scripts/cleanup-internet-gateways.sh :var name=name
-vpcs=$(aws ec2 describe-internet-gateways --profile ${name} --output text --filter "Name=tag:Name,Values=${name}-subnet" --query "InternetGateways[*].Attachments[*].VpcId")
-igws=$(aws ec2 describe-internet-gateways --profile ${name} --output text --filter "Name=tag:Name,Values=${name}-subnet" --query "InternetGateways[*].InternetGatewayId")
+#+BEGIN_SRC sh :tangle scripts/cleanup-internet-gateways.sh :var name=name :var region=region
+vpcs=$(aws --region ${region} ec2 describe-internet-gateways --profile ${name} --output text --filter "Name=tag:Name,Values=${name}-subnet" --query "InternetGateways[*].Attachments[*].VpcId")
+igws=$(aws --region ${region} ec2 describe-internet-gateways --profile ${name} --output text --filter "Name=tag:Name,Values=${name}-subnet" --query "InternetGateways[*].InternetGatewayId")
 vis=$(paste <(echo "$vpcs") <(echo "$igws") --delimiters ';')
 
 for vi in vis; do
@@ -871,12 +872,12 @@ following script accepts three parameters:
  - I: the instance-id
  - D: the device name
 
-#+BEGIN_SRC sh :tangle scripts/new-volume.sh :var az=az :var name=name :var scriptsDir=scriptsDir
+#+BEGIN_SRC sh :tangle scripts/new-volume.sh :var az=az :var name=name :var scriptsDir=scriptsDir :var region=region
 S=$1
 I=$2
 D=$3
 
-volumeId=$(aws ec2 create-volume \
+volumeId=$(aws --region ${region} ec2 create-volume \
                --profile ${name} \
                --size ${S} \
                --volume-type gp2 \
@@ -884,10 +885,10 @@ volumeId=$(aws ec2 create-volume \
                --query "VolumeId" \
                --output text)
 
-aws ec2 create-tags --resources ${volumeId} --tags Key=Name,Value=${name}-volume --profile ${name}
+aws --region ${region} ec2 create-tags --resources ${volumeId} --tags Key=Name,Value=${name}-volume --profile ${name}
 ${scriptsDir}/tag4billing.sh ${volumeId}
 
-aws ec2 attach-volume \
+aws --region ${region} ec2 attach-volume \
     --profile ${name} \
     --volume-id ${volumeId} \
     --instance-id ${I} \
@@ -933,11 +934,11 @@ The following script iterates through the availability zones of the
 current region and prints a statistical summary of the spot price
 history.
 
-#+BEGIN_SRC sh :tangle scripts/spot-price-summary.sh :var instanceType=instanceType
-azs=$(aws cloudhsm list-available-zones --output text --query 'AZList')
+#+BEGIN_SRC sh :tangle scripts/spot-price-summary.sh :var instanceType=instanceType :var region=region
+azs=$(aws --region ${region} cloudhsm list-available-zones --output text --query 'AZList')
 for az in ${azs}; do
     echo ${az}
-    aws ec2 describe-spot-price-history \
+    aws --region ${region} ec2 describe-spot-price-history \
         --instance-types ${instanceType} \
         --availability-zone ${az} \
         --filters "Name=product-description,Values=Linux/UNIX" \
@@ -947,10 +948,10 @@ for az in ${azs}; do
 done
 #+END_SRC
 
-#+BEGIN_SRC sh :tangle scripts/spot-price-timeseries.sh :var instanceType=instanceType
+#+BEGIN_SRC sh :tangle scripts/spot-price-timeseries.sh :var instanceType=instanceType :var region=region
 az=$1
 echo ${az}
-aws ec2 describe-spot-price-history \
+aws --region ${region} ec2 describe-spot-price-history \
     --instance-types ${instanceType} \
     --availability-zone ${az} \
     --filters "Name=product-description,Values=Linux/UNIX" \
@@ -1004,7 +1005,7 @@ running.
 The following script takes as an input a region and computes prices
 over all availability zones within it.
 
-#+BEGIN_SRC sh :tangle scripts/spot-price-comparison.sh :var scriptsDir=scriptsDir :var dataDir=dataDir :var instanceType=instanceType
+#+BEGIN_SRC sh :tangle scripts/spot-price-comparison.sh :var scriptsDir=scriptsDir :var dataDir=dataDir :var instanceType=instanceType :var region=region
 region=$1
 azs=$(aws --region ${region} cloudhsm list-available-zones --output text --query 'AZList')
 
@@ -1062,7 +1063,7 @@ p3 <- grid.arrange(
 dev.off()
 #+END_SRC
 
-#+BEGIN_SRC sh :tangle scripts/plot-spot-price-summary.sh :var scriptsDir=scriptsDir :var dataDir=dataDir :var instanceType=instanceType
+#+BEGIN_SRC sh :tangle scripts/plot-spot-price-summary.sh :var scriptsDir=scriptsDir :var dataDir=dataDir :var instanceType=instanceType :var region=region
 region=$1
 Rscript ${scriptsDir}/plot-spot-price-summary.R ${dataDir}/spot-prices/${instanceType}-spot-price-history-${region}-summary.csv ${dataDir}/spot-prices/${instanceType}-spot-price-history-${region}-summary.pdf
 #+END_SRC
